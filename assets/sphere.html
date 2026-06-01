@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS Core</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: transparent; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    width: 100vw; height: 100vh;
+    font-family: system-ui, -apple-system, sans-serif;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100%; height: 100%;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  let W, H, cx, cy, R;
+  let currentState = 'LISTENING';
+  let currentVolume = 0;
+  let themeColors = { PRI: '#007AFF', PRI_DIM: '#0055CC', TEXT: '#F5F5F7', BG: '#1C1C1E' };
+  let time = 0;
+  let particles = [];
+  let bouncePhase = 0;
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    cx = W / 2; cy = H / 2;
+    R = Math.min(W, H) * 0.35;
+    if (R > 200) R = 200;
+    if (R < 60) R = 60;
+  }
+  window.addEventListener('resize', resize);
+
+  function hexToRgba(h, a) {
+    if (!h || !/^#/.test(h)) return `rgba(128,128,128,${a})`;
+    let c = h.slice(1);
+    if (c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+    const v = parseInt(c, 16);
+    return `rgba(${(v>>16)&255},${(v>>8)&255},${v&255},${a})`;
+  }
+
+  class Particle {
+    constructor() { this.reset(); }
+    reset() {
+      const a = Math.random() * Math.PI * 2;
+      const r = R * (0.6 + Math.random() * 0.5);
+      this.x = cx + Math.cos(a) * r;
+      this.y = cy + Math.sin(a) * r;
+      this.vx = (Math.random() - 0.5) * 0.3;
+      this.vy = (Math.random() - 0.5) * 0.3;
+      this.size = 1 + Math.random() * 2;
+      this.life = 0.5 + Math.random() * 0.5;
+      this.maxLife = this.life;
+    }
+    update() {
+      this.x += this.vx; this.y += this.vy;
+      this.life -= 0.002;
+      if (this.life <= 0) this.reset();
+    }
+    draw() {
+      const alpha = (this.life / this.maxLife) * 0.5;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(themeColors.PRI, alpha);
+      ctx.fill();
+    }
+  }
+
+  for (let i = 0; i < 40; i++) particles.push(new Particle());
+
+  function drawRing(cx, cy, radius, thickness, color, alpha, offset) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, offset || 0, Math.PI * 2 + (offset || 0));
+    ctx.strokeStyle = hexToRgba(color, alpha);
+    ctx.lineWidth = thickness;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    time += 0.02;
+
+    let pulse = 1;
+    let glowSize = 1;
+    let glowAlpha = 0.15;
+    let rotSpeed = 0.003;
+    let ringAlpha = 0.25;
+    let label = '';
+    let bounceY = 0;
+
+    switch (currentState) {
+      case 'SPEAKING':
+        pulse = 1 + currentVolume * 0.12;
+        glowSize = 1 + currentVolume * 0.3;
+        glowAlpha = 0.15 + currentVolume * 0.35;
+        rotSpeed = 0.008 + currentVolume * 0.02;
+        ringAlpha = 0.3 + currentVolume * 0.4;
+        bounceY = Math.sin(time * 12) * currentVolume * 6;
+        break;
+      case 'THINKING':
+        pulse = 1 + Math.sin(time * 4) * 0.03;
+        glowSize = 1 + Math.sin(time * 2) * 0.1;
+        glowAlpha = 0.2 + Math.sin(time * 3) * 0.1;
+        rotSpeed = 0.015;
+        ringAlpha = 0.3 + Math.sin(time * 2) * 0.1;
+        break;
+      case 'MUTED':
+        pulse = 1;
+        glowSize = 0.8;
+        glowAlpha = 0.06;
+        rotSpeed = 0.001;
+        ringAlpha = 0.1;
+        break;
+      default: // LISTENING
+        pulse = 1 + Math.sin(time * 2) * 0.015;
+        glowSize = 1 + Math.sin(time * 2) * 0.08;
+        glowAlpha = 0.12 + Math.sin(time * 2) * 0.05;
+        rotSpeed = 0.004;
+        ringAlpha = 0.2;
+    }
+
+    const r = R * pulse;
+    const thickness = 2 + currentVolume * 3;
+
+    // Outer glow
+    const grad = ctx.createRadialGradient(cx, cy + bounceY, 0, cx, cy + bounceY, r * glowSize * 1.2);
+    grad.addColorStop(0, hexToRgba(themeColors.PRI, glowAlpha));
+    grad.addColorStop(1, 'transparent');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bounceY, r * glowSize * 1.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Rotating rings
+    ctx.save();
+    ctx.translate(cx, cy + bounceY);
+    ctx.rotate(time * rotSpeed);
+    drawRing(0, 0, r * 0.85, thickness * 0.8, themeColors.PRI, ringAlpha * 0.6, 0);
+    ctx.rotate(-time * rotSpeed * 2);
+    drawRing(0, 0, r * 0.7, thickness * 0.5, themeColors.PRI_DIM, ringAlpha * 0.4, Math.PI);
+    ctx.restore();
+
+    // Main ring
+    ctx.beginPath();
+    ctx.arc(cx, cy + bounceY, r * 0.78, 0, Math.PI * 2);
+    ctx.strokeStyle = hexToRgba(themeColors.PRI, ringAlpha * 0.8 + (currentState === 'SPEAKING' ? currentVolume * 0.3 : 0));
+    ctx.lineWidth = thickness * 0.7;
+    ctx.stroke();
+
+    // Inner glow ring (pulsing)
+    const innerR = r * 0.55;
+    const innerGrad = ctx.createRadialGradient(cx, cy + bounceY, 0, cx, cy + bounceY, innerR);
+    const innerAlpha = currentState === 'MUTED' ? 0.04 : 0.08 + Math.sin(time * 3) * 0.04;
+    innerGrad.addColorStop(0, hexToRgba(themeColors.PRI, innerAlpha));
+    innerGrad.addColorStop(1, 'transparent');
+    ctx.fillStyle = innerGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bounceY, innerR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // The J letter
+    ctx.save();
+    ctx.translate(cx, cy + bounceY);
+    const fs = r * 0.75;
+    ctx.font = `600 ${fs}px system-ui, -apple-system, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    const jAlpha = currentState === 'MUTED' ? 0.35 : 0.9;
+    // Shadow glow on text
+    ctx.shadowColor = hexToRgba(themeColors.PRI, currentState === 'SPEAKING' ? 0.6 + currentVolume * 0.4 : 0.3);
+    ctx.shadowBlur = currentState === 'SPEAKING' ? 20 + currentVolume * 30 : 12;
+    ctx.fillStyle = hexToRgba(themeColors.PRI, jAlpha);
+    ctx.fillText('J', 0, 0);
+    ctx.shadowBlur = 0;
+
+    // Subtitle
+    if (r > 80) {
+      const subSize = r * 0.12;
+      ctx.font = `500 ${subSize}px system-ui, -apple-system, sans-serif`;
+      ctx.fillStyle = hexToRgba(themeColors.TEXT, currentState === 'MUTED' ? 0.2 : 0.4);
+      ctx.fillText('JARVIS', 0, fs * 0.5 + subSize * 0.8);
+    }
+    ctx.restore();
+
+    // Particles
+    const particleSpeed = currentState === 'THINKING' ? 2 : (currentState === 'SPEAKING' ? 1.5 : 0.6);
+    particles.forEach(p => { p.update(); p.draw(); });
+
+    requestAnimationFrame(draw);
+  }
+
+  // === Exposed APIs for Python ===
+  window.updateState = function(state) {
+    currentState = state;
+  };
+
+  window.updateVolume = function(level) {
+    currentVolume = Math.min(1, Math.max(0, level));
+  };
+
+  window.setThemeColors = function(colors) {
+    themeColors = {
+      PRI: colors.PRI || '#007AFF',
+      PRI_DIM: colors.PRI_DIM || '#0055CC',
+      TEXT: colors.TEXT || '#F5F5F7',
+      BG: colors.BG || '#1C1C1E'
+    };
+  };
+
+  resize();
+  draw();
+</script>
+</body>
+</html>

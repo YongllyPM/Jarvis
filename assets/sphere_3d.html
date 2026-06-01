@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JARVIS Neural Sphere</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: transparent; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    width: 100vw; height: 100vh;
+    user-select: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  let W, H, cx, cy, R;
+  let currentState = 'LISTENING';
+  let currentVolume = 0;
+  let themeColors = { PRI: '#007AFF', PRI_DIM: '#0055CC', TEXT: '#F5F5F7', BG: '#1C1C1E' };
+  let time = 0;
+  let rotX = 0, rotY = 0;
+
+  const NODES = 80;
+  let nodes = [];
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    cx = W / 2; cy = H / 2;
+    R = Math.min(W, H) * 0.38;
+    if (R > 160) R = 160;
+    if (R < 50) R = 50;
+  }
+  window.addEventListener('resize', resize);
+
+  function hex(c, a) {
+    if (!c || !/^#/.test(c)) return `rgba(128,128,128,${a})`;
+    let h = c.slice(1);
+    if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+    const v = parseInt(h, 16);
+    return `rgba(${(v>>16)&255},${(v>>8)&255},${v&255},${a})`;
+  }
+
+  class Node {
+    constructor() {
+      this.theta = Math.random() * Math.PI * 2;
+      this.phi = Math.acos(Math.random() * 2 - 1);
+      this.size = 1 + Math.random() * 2;
+      this.pulse = Math.random() * Math.PI * 2;
+      this.speed = 0.02 + Math.random() * 0.05;
+      this.firing = 0;
+    }
+    project(rx, ry, r) {
+      let x = r * Math.sin(this.phi) * Math.cos(this.theta);
+      let y = r * Math.sin(this.phi) * Math.sin(this.theta);
+      let z = r * Math.cos(this.phi);
+      let x1 = x * Math.cos(ry) - z * Math.sin(ry);
+      let z1 = x * Math.sin(ry) + z * Math.cos(ry);
+      let y2 = y * Math.cos(rx) - z1 * Math.sin(rx);
+      let z2 = y * Math.sin(rx) + z1 * Math.cos(rx);
+      return { x: x1, y: y2, z: z2 };
+    }
+  }
+
+  function initNodes() {
+    nodes = [];
+    for (let i = 0; i < NODES; i++) nodes.push(new Node());
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    time += 0.02;
+
+    let speedM = 1, intensity = 1, bR = R;
+    switch (currentState) {
+      case 'SPEAKING':
+        speedM = 1.5 + currentVolume * 2;
+        intensity = 1 + currentVolume * 0.6;
+        bR = R * (1 + currentVolume * 0.15);
+        break;
+      case 'THINKING':
+        speedM = 3.5; intensity = 1.4; bR = R * 1.03;
+        break;
+      case 'MUTED':
+        speedM = 0.2; intensity = 0.4;
+        break;
+      default:
+        speedM = 0.8; intensity = 0.8;
+        bR = R * (1 + Math.sin(time) * 0.01);
+    }
+
+    rotX += 0.002 * speedM;
+    rotY += 0.005 * speedM;
+
+    // Glow
+    const gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, bR * 1.2);
+    const ga = currentState === 'MUTED' ? 0.04 : 0.1 + (currentState === 'SPEAKING' ? currentVolume * 0.3 : 0);
+    gr.addColorStop(0, hex(themeColors.PRI, ga));
+    gr.addColorStop(1, 'transparent');
+    ctx.fillStyle = gr;
+    ctx.beginPath(); ctx.arc(cx, cy, bR * 1.2, 0, Math.PI * 2); ctx.fill();
+
+    const pts = nodes.map(n => {
+      n.pulse += n.speed * speedM;
+      if (n.firing > 0) n.firing -= 0.03;
+      return n.project(rotX, rotY, bR);
+    });
+
+    // Connections
+    const distTh = currentState === 'MUTED' ? 80 : (currentState === 'THINKING' ? 150 : 120);
+    const connLimit = currentState === 'MUTED' ? 1 : (currentState === 'THINKING' ? 5 : 3);
+    for (let i = 0; i < pts.length; i++) {
+      let conns = 0;
+      for (let j = i + 1; j < pts.length; j++) {
+        if (conns >= connLimit) break;
+        const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y, dz = pts[i].z - pts[j].z;
+        const d = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (d < distTh) {
+          conns++;
+          const sc = ((pts[i].z + pts[j].z) / 2 + bR) / (bR * 2);
+          const a = (1 - d / distTh) * 0.35 * sc * intensity;
+          ctx.beginPath();
+          ctx.moveTo(cx + pts[i].x, cy + pts[i].y);
+          ctx.lineTo(cx + pts[j].x, cy + pts[j].y);
+          ctx.strokeStyle = hex(themeColors.PRI, a);
+          ctx.lineWidth = 0.5 + sc * 1.2;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Nodes
+    pts.sort((a, b) => a.z - b.z);
+    pts.forEach((p, i) => {
+      const sc = (p.z + bR) / (bR * 2) * 0.7 + 0.3;
+      const fb = nodes[i].firing * 3;
+      const a = sc * (0.3 + Math.sin(nodes[i].pulse) * 0.2) * intensity;
+
+      ctx.beginPath();
+      ctx.arc(cx + p.x, cy + p.y, nodes[i].size * sc + fb, 0, Math.PI * 2);
+      ctx.fillStyle = hex(themeColors.PRI, Math.min(1, a + nodes[i].firing));
+      ctx.fill();
+
+      if (sc > 0.5 || nodes[i].firing > 0.1) {
+        ctx.shadowBlur = (10 + fb * 8) * intensity;
+        ctx.shadowColor = hex(themeColors.PRI, 1);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+    });
+
+    requestAnimationFrame(draw);
+  }
+
+  // === APIs ===
+  window.updateState = function(s) { currentState = s; };
+  window.updateVolume = function(v) { currentVolume = Math.min(1, Math.max(0, v)); };
+  window.setThemeColors = function(c) {
+    themeColors = { PRI: c.PRI || '#007AFF', PRI_DIM: c.PRI_DIM || '#0055CC', TEXT: c.TEXT || '#F5F5F7', BG: c.BG || '#1C1C1E' };
+  };
+
+  resize();
+  initNodes();
+  draw();
+</script>
+</body>
+</html>
