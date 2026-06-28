@@ -2,7 +2,7 @@
 import json, zipfile, io, shutil
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent
+BASE = Path(__file__).resolve().parent.parent
 CHARS_DIR = BASE / "assets" / "characters"
 OUT_DIR = BASE / "_character_zips"
 

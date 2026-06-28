@@ -1,6 +1,20 @@
-import os
+import json
 from pathlib import Path
 from datetime import datetime
+
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "api_keys.json"
+
+
+def _default_path() -> Path:
+    try:
+        cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        saved = cfg.get("default_save_path", "")
+        if saved:
+            return Path(saved)
+    except Exception:
+        pass
+    return Path.home() / "Desktop"
+
 
 def document_creator(parameters: dict, player=None) -> str:
     """
@@ -11,8 +25,8 @@ def document_creator(parameters: dict, player=None) -> str:
     content = parameters.get("content", "")
     sheets = parameters.get("sheets", [])
     
-    # Determinar ruta de guardado (por defecto, el Escritorio)
-    desktop_path = Path(os.path.join(os.environ["USERPROFILE"], "Desktop"))
+    # Ruta de guardado (configurable vía default_save_path)
+    save_path = _default_path()
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_title = "".join([c for c in title if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_")
@@ -43,7 +57,7 @@ def document_creator(parameters: dict, player=None) -> str:
                         doc.add_paragraph(line)
                         
                 file_name = f"{safe_title}_{timestamp}.docx"
-                file_path = desktop_path / file_name
+                file_path = save_path / file_name
                 doc.save(file_path)
                 return f"Documento Word creado exitosamente en tu Escritorio como '{file_name}'."
             except ImportError:
@@ -70,7 +84,7 @@ def document_creator(parameters: dict, player=None) -> str:
                         ws.append(row)
                         
                 file_name = f"{safe_title}_{timestamp}.xlsx"
-                file_path = desktop_path / file_name
+                file_path = save_path / file_name
                 wb.save(file_path)
                 return f"Planilla Excel creada exitosamente en tu Escritorio como '{file_name}'."
             except ImportError:
@@ -78,7 +92,7 @@ def document_creator(parameters: dict, player=None) -> str:
                 
         elif action == "text":
             file_name = f"{safe_title}_{timestamp}.txt"
-            file_path = desktop_path / file_name
+            file_path = save_path / file_name
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(f"{title}\n\n{content}")
             return f"Archivo de texto creado en tu Escritorio como '{file_name}'."

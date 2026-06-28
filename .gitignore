@@ -14,6 +14,16 @@ config/api_keys.json
 config/rules.json
 config/user_profile.json
 config/morning_brief_state.json
+config/activity_log.json
+config/habit_history.json
+config/learned_habits.json
+config/suggested_automations.json
+config/macros.json
+config/scenes.json
+config/vision_guardian_state.json
+config/accessibility_config.json
+config/knowledge/
+config/vosk_model/
 custom_tools.json
 
 # Generated files
@@ -24,6 +34,14 @@ _update_temp/
 _character_zips/
 Instalar_JARVIS.exe
 *.log
+backups/
+saludo.txt
+
+# Installer
+install/Instalar_JARVIS.iss
+
+# Personal
+~/
 
 # Scratch scripts
 patch_main.py

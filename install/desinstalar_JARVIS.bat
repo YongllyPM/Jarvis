@@ -9,7 +9,7 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 echo =======================================================================
 echo            DESINSTALADOR DE JARVIS AI
@@ -88,7 +88,7 @@ echo =======================================================================
 echo   LIMPIEZA LIGERA COMPLETADA
 echo =======================================================================
 echo.
-echo Para reinstalar JARVIS, ejecuta "Instalar_JARVIS.bat".
+echo Para reinstalar JARVIS, ejecuta "install\Instalar_JARVIS.bat".
 echo.
 pause
 exit /b

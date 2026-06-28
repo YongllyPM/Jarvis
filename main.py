@@ -125,10 +125,6 @@ def _load_tz():
     if changed:
         API_CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
 
-import numpy as np
-import sounddevice as sd
-from google import genai
-from google.genai import types
 from ui import JarvisUI, TutorialOverlay
 
 def _patch_settings_ui():
@@ -209,6 +205,24 @@ try:
 except ImportError:
     computer_control = None
 try:
+    from actions.computer_agent import computer_agent, stop_agent
+except ImportError:
+    computer_agent = None
+    stop_agent = None
+try:
+    from actions.habit_learner import (
+        record as record_habit,
+        record_command,
+        record_boot,
+        record_click,
+        get_matching_habits_by_text,
+        execute_habit as exec_habit,
+    )
+except ImportError:
+    record_habit = record_command = record_boot = record_click = None
+    get_matching_habits_by_text = None
+    exec_habit = None
+try:
     from actions.game_updater      import game_updater
 except ImportError:
     game_updater = None
@@ -245,6 +259,10 @@ try:
 except ImportError:
     rules_engine = None; start_rules_runner = None; check_phrase_triggers = None; _rules_run_action = None
 try:
+    from actions.habits_tracker    import start_tracker as start_habits_tracker, stop_tracker as stop_habits_tracker, get_activity_summary
+except ImportError:
+    start_habits_tracker = None; stop_habits_tracker = None; get_activity_summary = None
+try:
     from actions.social_media      import social_media
 except ImportError:
     social_media = None
@@ -255,7 +273,8 @@ except ImportError:
 try:
     from actions.user_profile      import user_profile, record_action
 except ImportError:
-    user_profile = None; record_action = None
+    user_profile = None
+    record_action = None
 try:
     from actions.goals             import goals
 except ImportError:
@@ -280,14 +299,6 @@ try:
     from actions.document_creator  import document_creator
 except ImportError:
     document_creator = None
-try:
-    from actions.document_manager  import document_manager
-except ImportError:
-    document_manager = None
-try:
-    from actions.web_navigation    import web_navigation
-except ImportError:
-    web_navigation = None
 try:
     from actions.image_generation  import image_generation
 except ImportError:
@@ -333,10 +344,6 @@ try:
 except ImportError:
     accessibility_overlay = None
 try:
-    from actions.morning_brief     import morning_brief, already_briefed_today, mark_briefed
-except ImportError:
-    morning_brief = None; already_briefed_today = None; mark_briefed = None
-try:
     from actions.vision_guardian   import vision_guardian, start as _start_vision_guardian
 except ImportError:
     vision_guardian = None; _start_vision_guardian = None
@@ -345,13 +352,13 @@ try:
 except ImportError:
     openrouter_agent = None
 try:
+    from actions.morning_brief     import morning_brief
+except ImportError:
+    morning_brief = None
+try:
     from actions.scenes            import scenes_control
 except ImportError:
     scenes_control = None
-try:
-    from actions.screen_reader     import screen_reader
-except ImportError:
-    screen_reader = None
 
 
 
@@ -424,6 +431,20 @@ def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         _cached_api_key = json.load(f)["gemini_api_key"]
     return _cached_api_key
+
+
+_PLACEHOLDER_PREFIXES = ("AQUI_", "TU_", "REEMPLAZAR", "API_KEY", "XXXXXXXX")
+
+def _is_placeholder(val: str) -> bool:
+    v = val.strip()
+    if not v:
+        return True
+    for prefix in _PLACEHOLDER_PREFIXES:
+        if v.startswith(prefix):
+            return True
+    if len(v) < 20:
+        return True
+    return False
 
 
 JARVIS_VOICES = {
@@ -773,7 +794,7 @@ TOOL_DECLARATIONS = [
     },
     {
         "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
+        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen. Para presionar la tecla Windows usá action='press' con key='win'. Para abrir el menú contextual usá key='apps'. Para Ctrl+C usá action='hotkey' con keys='ctrl+c'.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -781,8 +802,8 @@ TOOL_DECLARATIONS = [
                 "text":        {"type": "STRING", "description": "Text to type or paste"},
                 "x":           {"type": "INTEGER", "description": "X coordinate"},
                 "y":           {"type": "INTEGER", "description": "Y coordinate"},
-                "keys":        {"type": "STRING", "description": "Key combination e.g. 'ctrl+c'"},
-                "key":         {"type": "STRING", "description": "Single key e.g. 'enter'"},
+                "keys":        {"type": "STRING", "description": "Key combination e.g. 'ctrl+c', 'alt+tab', 'win+d'"},
+                "key":         {"type": "STRING", "description": "Single key e.g. 'enter', 'win', 'tab', 'escape', 'apps'"},
                 "direction":   {"type": "STRING", "description": "up | down | left | right"},
                 "amount":      {"type": "INTEGER", "description": "Scroll amount (default: 3)"},
                 "seconds":     {"type": "NUMBER",  "description": "Seconds to wait"},
@@ -2089,6 +2110,65 @@ TOOL_DECLARATIONS = [
             "required": ["action"]
         }
     },
+    {
+        "name": "check_update",
+        "description": (
+            "Busca actualizaciones de JARVIS en GitHub. "
+            "Usar cuando el usuario pregunte si hay una versión nueva, "
+            "si hay actualización disponible, o la versión actual."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "check (buscar actualización, default) | version (decir versión actual)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "telegram_status",
+        "description": (
+            "Consulta el estado de Telegram: si está configurado, "
+            "si está activo, o permite enviar un mensaje de prueba. "
+            "Usar cuando el usuario pregunte si Telegram funciona o "
+            "quiera saber si puede recibir mensajes."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "status (estado actual, default) | test (enviar mensaje de prueba)"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "computer_agent",
+        "description": "Agente autónomo inteligente. Completa tareas complejas de PC en múltiples pasos: descargar e instalar programas, crear documentos, navegar sitios web, etc. El agente observa la pantalla, decide cada paso y lo ejecuta. Usar para tareas que requieran más de un paso. NO usar para acciones simples de un solo paso (usar computer_control para eso). IMPORTANTE: si el usuario no especificó el modo, preguntale si quiere 'foreground' (visible) o 'background' (oculto/rápido) antes de ejecutar. Si no responde, usá 'foreground'.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "task": {
+                    "type": "STRING",
+                    "description": "Descripción detallada de la tarea a completar"
+                },
+                "mode": {
+                    "type": "STRING",
+                    "description": "'foreground' (visible) o 'background' (oculto, más rápido). Si no se especifica, se determinará automáticamente según la configuración."
+                },
+                "max_steps": {
+                    "type": "INTEGER",
+                    "description": "Máximo de pasos (default: 30)"
+                }
+            },
+            "required": ["task"]
+        }
+    },
 ]
 
 # Cargar herramientas dinámicas creadas por tool_creator
@@ -2122,11 +2202,15 @@ class JarvisLive:
         # Iniciar scheduler y motor de reglas en background al arrancar JARVIS
         start_runner(player=ui, speak=None)
         start_rules_runner(player=ui, speak=None)
+        if start_habits_tracker:
+            start_habits_tracker(player=ui, speak=None)
         self.out_queue      = None
         self._loop          = None
-        self._is_speaking   = False
-        self._speaking_lock = threading.Lock()
-        self._stop_requested = threading.Event()
+        self._is_speaking      = False
+        self._speaking_lock    = threading.Lock()
+        self._speaking_start_ts = 0.0
+        self._stop_requested   = threading.Event()
+        self._pending_text_queue: list[str] = []
         self.ui.on_text_command = self._on_text_command
         self.ui.on_stop_command = self._on_stop_pressed
         self.ui.on_config_saved = self._apply_config
@@ -2162,7 +2246,7 @@ class JarvisLive:
             raise RuntimeError("Config changed — reconnect requested")
 
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
+        if not self._loop:
             return
 
         # Audio file: process with Gemini Vision (not the realtime audio session)
@@ -2174,6 +2258,28 @@ class JarvisLive:
                 )
             return
 
+        # Slash commands — routed directly to tools (no AI inference)
+        if text.startswith("/"):
+            self._handle_slash_command(text)
+            return
+
+        # Macro matching — se ejecuta solo con /macro
+        # (ya no se detecta automáticamente al escribir texto)
+
+        # Registrar comando para aprendizaje de hábitos
+        if record_command:
+            record_command(text)
+
+        # Hábitos aprendidos — si la frase coincide con un hábito, ejecutarlo
+        if get_matching_habits_by_text:
+            for h in get_matching_habits_by_text(text):
+                if h.get("auto_exec", False):
+                    self.ui.write_log(f"🔄 Hábito: {h.get('name','')}")
+                    asyncio.run_coroutine_threadsafe(
+                        self._run_learned_habit(h), self._loop
+                    )
+                    return
+
         # Check phrase triggers — if one fires, don't also send to Gemini
         if self._fire_phrase_triggers(text):
             return
@@ -2182,13 +2288,197 @@ class JarvisLive:
         if self.ui.current_file:
             text = f"[Archivo cargado: '{self.ui.current_file}'] {text}"
 
+        if not self.session:
+            self.ui.write_log("SYS: Sesión no disponible, reencolando mensaje…")
+            self._pending_text_queue.append(text)
+            return
+
         asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True
-            ),
+            self._send_text(text),
             self._loop
         )
+
+    # ── Slash commands ────────────────────────────────────────────────────────
+
+    def _handle_slash_command(self, text: str):
+        """Parse and route /commands directly to tools or AI."""
+        parts = text[1:].split(" ", 1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "accion":
+            if not args:
+                self.ui.write_log("Uso: /accion <tarea> — Ej: /accion descargar VLC")
+                return
+            self.ui.write_log(f"🤖 Agente autónomo iniciado: {args}")
+            asyncio.run_coroutine_threadsafe(
+                self._exec_computer_agent(args), self._loop
+            )
+
+        elif cmd == "alarma":
+            if not args:
+                self.ui.write_log("Uso: /alarma <mensaje> — Ej: /alarma recordame comprar leche en 1 hora")
+                return
+            self.ui.write_log(f"⏰ Programando recordatorio…")
+            asyncio.run_coroutine_threadsafe(
+                self._exec_reminder(args), self._loop
+            )
+
+        elif cmd == "memoria":
+            if not args:
+                self.ui.write_log("Uso: /memoria <texto> — Ej: /memoria mi color favorito es el azul")
+                return
+            update_memory({"notes": {"nota_usuario": {"value": args}}})
+            self.ui.write_log(f"💾 Memoria guardada: {args}")
+
+        elif cmd == "crear":
+            if not args:
+                self.ui.write_log("Uso: /crear <tipo> <desc> — Ej: /crear imagen de un gato")
+                return
+            self.ui.write_log(f"🎨 Creando: {args}")
+            asyncio.run_coroutine_threadsafe(
+                self._send_text(f"Creá {args} y guardalo en el disco"), self._loop
+            )
+
+        elif cmd == "buscar":
+            if not args:
+                self.ui.write_log("Uso: /buscar <consulta> — Ej: /buscar clima en Buenos Aires")
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._send_text(f"Buscá en internet y respondé: {args}"), self._loop
+            )
+
+        elif cmd == "notas":
+            if not args:
+                self.ui.write_log("Uso: /notas <texto> — Ej: /notas agregar que tengo que llamar al médico")
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._send_text(f"Leé o escribí en las notas: {args}"), self._loop
+            )
+
+        elif cmd == "macro":
+            if not args:
+                self.ui.write_log("Uso: /macro <descripción> — Ej: /macro leer todos mis correos")
+                return
+            find_matching_local = None
+            try:
+                from actions.macro_engine import find_matching, execute as execute_macro
+                find_matching_local = find_matching
+            except ImportError:
+                pass
+            if find_matching_local:
+                macro = find_matching_local(args)
+                if macro:
+                    self.ui.write_log(f"⚡ Macro encontrada: {macro.get('name', '')}")
+                    threading.Thread(
+                        target=lambda: execute_macro(macro, player=self.ui),
+                        daemon=True
+                    ).start()
+                else:
+                    self.ui.write_log(f"⚠️ No se encontró macro para: {args}")
+            else:
+                self.ui.write_log("❌ Sistema de macros no disponible.")
+
+        elif cmd == "habitos":
+            if get_activity_summary:
+                summary = get_activity_summary()
+                self.ui.write_log(summary)
+            else:
+                self.ui.write_log("📊 Módulo de hábitos no disponible.")
+
+        elif cmd == "ayuda":
+            asyncio.run_coroutine_threadsafe(
+                self._send_text(
+                    "Mostrale al usuario la lista de comandos disponibles y decile "
+                    "que para más ayuda puede unirse a nuestro Discord: "
+                    "https://discord.gg/xzBWqDnqQ"
+                ), self._loop
+            )
+
+        else:
+            # Unknown command — send raw text (minus /) to AI
+            asyncio.run_coroutine_threadsafe(
+                self._send_text(text[1:]), self._loop
+            )
+
+    def _slash_help_text(self) -> str:
+        return (
+            "━━━ Comandos rápidos ━━━\n"
+            "/accion <tarea>   — Ejecutar agente autónomo\n"
+            "/macro <desc>     — Ejecutar macro guardada\n"
+            "/crear <tipo>     — Crear imagen, documento, archivo\n"
+            "/alarma <msg>     — Programar recordatorio\n"
+            "/memoria <texto>  — Guardar en memoria permanente\n"
+            "/buscar <consul>  — Buscar en internet\n"
+            "/notas <texto>    — Leer o escribir notas\n"
+            "/habitos          — Ver resumen de actividad\n"
+            "/ayuda            — Mostrar esta ayuda\n"
+            "━━━━━━━━━━━━━━━━━━━━"
+        )
+
+    async def _exec_computer_agent(self, task: str):
+        loop = asyncio.get_event_loop()
+        try:
+            r = await loop.run_in_executor(
+                _TOOL_EXECUTOR,
+                lambda: computer_agent(
+                    parameters={"task": task, "mode": "foreground", "max_steps": 15},
+                    player=self.ui,
+                    speak=self.speak
+                )
+            )
+            self.ui.write_log(str(r) if r else "✅ Agente completado.")
+        except Exception as e:
+            self.ui.write_log(f"❌ Error en agente: {e}")
+
+    async def _run_learned_habit(self, habit: dict):
+        """Ejecuta un hábito aprendido."""
+        from actions.habit_learner import execute_habit
+        loop = asyncio.get_event_loop()
+        try:
+            await loop.run_in_executor(
+                _TOOL_EXECUTOR,
+                lambda: execute_habit(habit, player=self.ui)
+            )
+        except Exception as e:
+            self.ui.write_log(f"❌ Error ejecutando hábito: {e}")
+
+    async def _exec_reminder(self, message: str):
+        from actions.reminder import reminder
+        loop = asyncio.get_event_loop()
+        try:
+            r = await loop.run_in_executor(
+                _TOOL_EXECUTOR,
+                lambda: reminder(parameters={"message": message}, response=None, player=self.ui)
+            )
+            self.ui.write_log(r or "✅ Recordatorio programado.")
+        except Exception as e:
+            self.ui.write_log(f"❌ Error en recordatorio: {e}")
+
+    async def _send_text(self, text: str):
+        try:
+            await self.session.send_client_content(
+                turns={"parts": [{"text": text}]},
+                turn_complete=True
+            )
+        except Exception as e:
+            print(f"[JARVIS] Error enviando texto: {e}")
+            self.ui.write_log(f"SYS: Error al enviar mensaje, reencolando…")
+            self._pending_text_queue.append(text)
+
+    async def _flush_pending_text(self):
+        if not self.session:
+            return
+        while self._pending_text_queue:
+            text = self._pending_text_queue[0]
+            try:
+                await self.session.send_client_content(
+                    turns={"parts": [{"text": text}]},
+                    turn_complete=True
+                )
+                self._pending_text_queue.pop(0)
+            except Exception as e:
+                print(f"[JARVIS] Error flushing pending text: {e}")
 
     async def _process_audio_file(self, path: str):
         """Transcribe and analyze an audio file via Gemini (separate from realtime session)."""
@@ -2213,6 +2503,8 @@ class JarvisLive:
             loop = asyncio.get_event_loop()
 
             def _analyze():
+                from google import genai
+                from google.genai import types
                 client = genai.Client(api_key=_get_api_key())
                 resp = client.models.generate_content(
                     model="gemini-2.0-flash",
@@ -2356,11 +2648,14 @@ class JarvisLive:
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
-            self._is_speaking = value
-        if value:
-            self.ui.set_state("SPEAKING")
-        elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
+            if value:
+                self._is_speaking = value
+                self._speaking_start_ts = __import__("time").time()
+                self.ui.set_state("SPEAKING")
+            elif not self.ui.muted:
+                self.ui.set_state("LISTENING")
+            else:
+                self._is_speaking = value
 
     def speak(self, text: str):
         if not self._loop or not self.session:
@@ -2378,11 +2673,26 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"I'm afraid {tool_name} ran into a problem, sir. {short}")
 
+    # ── Cross-thread notification helper ─────────────────────────────────
+    def _show_notif(self, text: str, icon: str = "", timeout: int = 4000, notif_type: str = "info"):
+        """Show a notification overlay via the Qt main thread."""
+        win = getattr(self.ui, "_win", None)
+        if not win:
+            return
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: win._show_notification(text, icon=icon, timeout=timeout, notif_type=notif_type))
+        except Exception:
+            pass
+
     def _on_stop_pressed(self):
         """Llamado desde el hilo de la UI al presionar DETENER o ESC."""
         self._stop_requested.set()
         self.set_speaking(False)
         self.ui.write_log("SYS: ⛔ Respuesta detenida.")
+        self._show_notif("⛔ Respuesta detenida.", icon="⛔", timeout=2000, notif_type="info")
+        if stop_agent:
+            stop_agent()
         if self._loop:
             asyncio.run_coroutine_threadsafe(self._drain_audio_queue(), self._loop)
 
@@ -2398,8 +2708,9 @@ class JarvisLive:
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _build_config(self):
         from datetime import datetime
+        from google.genai import types
 
         memory     = load_memory()
         mem_str    = format_memory_for_prompt(memory)
@@ -2445,6 +2756,8 @@ class JarvisLive:
             system_instruction="\n".join(parts),
             tools=[{"function_declarations": TOOL_DECLARATIONS}],
         )
+
+
         if _speech_cfg:
             cfg_kwargs["speech_config"] = _speech_cfg
 
@@ -2511,9 +2824,13 @@ class JarvisLive:
         except Exception:
             pass
 
-        return types.LiveConnectConfig(**cfg_kwargs)
+        print("[JARVIS] 🏁 Returning config", flush=True)
+        result = types.LiveConnectConfig(**cfg_kwargs)
+        print("[JARVIS] ✅ Config object created", flush=True)
+        return result
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    async def _execute_tool(self, fc):
+        from google.genai import types
         name = fc.name
         args = dict(fc.args or {})
 
@@ -2687,10 +3004,29 @@ class JarvisLive:
                     lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
                 )
                 result = r or "Done."
+                if r and not r.startswith("❌") and "error" not in r.lower():
+                    self._show_notif("📄 Archivo procesado correctamente.", icon="📄", timeout=3000, notif_type="success")
 
             elif name == "computer_control":
                 r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: computer_control(parameters=args, player=self.ui))
                 result = r or "Done."
+
+            elif name == "computer_agent":
+                try:
+                    _cfg = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+                    ask_mode = _cfg.get("agent_ask_mode", False)
+                    if ask_mode and "mode" not in args:
+                        result = "¿Querés que ejecute la tarea en primer plano (foreground, visible) o segundo plano (background, oculto)? Decime cuál preferís."
+                    elif not ask_mode and "mode" not in args:
+                        args["mode"] = _cfg.get("agent_default_mode", "foreground")
+                        r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: computer_agent(parameters=args, player=self.ui, speak=self.speak))
+                        result = r or "Done."
+                    else:
+                        r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: computer_agent(parameters=args, player=self.ui, speak=self.speak))
+                        result = r or "Done."
+                except Exception:
+                    r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: computer_agent(parameters=args, player=self.ui, speak=self.speak))
+                    result = r or "Done."
 
             elif name == "game_updater":
                 r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
@@ -2771,6 +3107,8 @@ class JarvisLive:
             elif name == "image_generation":
                 r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: image_generation(parameters=args, player=self.ui))
                 result = r or "Done."
+                if r and not r.startswith("❌"):
+                    self._show_notif("🖼️ Imagen generada exitosamente.", icon="🖼️", timeout=4000, notif_type="success")
 
             elif name == "smart_home":
                 r = await loop.run_in_executor(_TOOL_EXECUTOR, lambda: smart_home(parameters=args, player=self.ui))
@@ -2927,6 +3265,47 @@ class JarvisLive:
                 else:
                     result = f"Acción de notas desconocida: {action_n}"
 
+            elif name == "check_update":
+                action_u = args.get("action", "check").lower()
+                if action_u == "version":
+                    try:
+                        v = json.loads((BASE_DIR / "version.json").read_text(encoding="utf-8"))
+                        result = f"Versión actual: {v.get('version', 'desconocida')}"
+                    except Exception:
+                        result = "No pude leer la versión."
+                else:
+                    if hasattr(self.ui, "_win") and hasattr(self.ui._win, "_check_for_updates"):
+                        self.ui._win._check_for_updates()
+                        result = "Buscando actualizaciones..."
+                    else:
+                        result = "El sistema de actualizaciones no está disponible."
+
+            elif name == "telegram_status":
+                action_t = args.get("action", "status").lower()
+                cfg_tg = {}
+                try:
+                    cfg_tg = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+                token = cfg_tg.get("telegram_token", "").strip()
+                enabled = cfg_tg.get("telegram_enabled", False)
+                if action_t == "test":
+                    if token and enabled:
+                        if hasattr(self.ui, "send_telegram_response"):
+                            self.ui.send_telegram_response("🟢 JARVIS: Telegram activo y funcionando.")
+                            result = "Mensaje de prueba enviado por Telegram."
+                        else:
+                            result = "Telegram configurado pero no pude enviar el mensaje de prueba."
+                    else:
+                        result = "Telegram no está configurado. Activá la integración en Ajustes."
+                else:
+                    if token and enabled:
+                        result = "Telegram está configurado y activo. Puedo enviar y recibir mensajes."
+                    elif token:
+                        result = "Telegram tiene token pero no está habilitado. Activá la opción en Ajustes."
+                    else:
+                        result = "Telegram no está configurado. Necesitás un token de BotFather."
+
             else:
                 # Intento de cargar herramienta dinámica (tool_creator u otras)
                 import importlib
@@ -2966,6 +3345,8 @@ class JarvisLive:
             await self.session.send_realtime_input(media=msg)
 
     async def _listen_audio(self):
+        import numpy as np
+        import sounddevice as sd
         print("[JARVIS] 🎤 Mic iniciado")
         loop = asyncio.get_event_loop()
 
@@ -3023,6 +3404,7 @@ class JarvisLive:
                     await asyncio.sleep(0.01)  # 10ms — máxima responsividad del mic
         except Exception as e:
             print(f"[JARVIS] ❌ Mic: {e}")
+            self._show_notif(f"❌ Error de micrófono:\n{e}", icon="🎤", timeout=6000, notif_type="error")
             raise
 
     async def _receive_audio(self):
@@ -3072,7 +3454,7 @@ class JarvisLive:
                             _first_chunk = True
 
                     if response.tool_call:
-                        self.ui.clear_jarvis_response()
+                        # Don't clear — output_transcription may have arrived in same response
                         _first_chunk = True
                         fcs = response.tool_call.function_calls
                         for fc in fcs:
@@ -3106,6 +3488,9 @@ class JarvisLive:
             raise
 
     async def _play_audio(self):
+        import sounddevice as sd
+        import time as _time
+        _get_ts = _time.time
         print("[JARVIS] 🔊 Play iniciado")
 
         stream = sd.RawOutputStream(
@@ -3119,6 +3504,7 @@ class JarvisLive:
         # Jitter buffer: accumulate a few chunks before playback to prevent underruns
         _jitter_buf: list[bytes] = []
         _JITTER_TARGET = 1  # ~20ms — start playback ASAP for low latency
+        _speaking_start_ts = _get_ts()
 
         try:
             while True:
@@ -3128,6 +3514,12 @@ class JarvisLive:
                         timeout=0.05   # 50ms — faster turn-complete detection
                     )
                 except asyncio.TimeoutError:
+                    # Safety: if speaking for >5s without turn_complete, something stalled — force reset
+                    if self._is_speaking:
+                        _speaking_duration = _get_ts() - _speaking_start_ts
+                        if _speaking_duration > 5.0:
+                            print(f"[JARVIS] ⚠️ Speaking timeout ({_speaking_duration:.0f}s) — forcing reset")
+                            self._turn_done_event.set()
                     # Must check turn_done + empty BEFORE jitter guard,
                     # otherwise 1-2 stuck chunks in jitter_buf prevent
                     # ever reaching the turn_done check → infinite SPEAKING loop.
@@ -3145,6 +3537,7 @@ class JarvisLive:
                     continue
 
                 self.set_speaking(True)
+                _speaking_start_ts = _get_ts()
                 _jitter_buf.append(chunk)
 
                 # Once we have enough chunks buffered, drain them to the output stream
@@ -3154,6 +3547,7 @@ class JarvisLive:
                     _jitter_buf.clear()
         except Exception as e:
             print(f"[JARVIS] ❌ Play: {e}")
+            self._show_notif(f"❌ Error de reproducción:\n{e}", icon="🔊", timeout=6000, notif_type="error")
             raise
         finally:
             self.set_speaking(False)
@@ -3161,6 +3555,8 @@ class JarvisLive:
             stream.close()
 
     async def run(self):
+        from google import genai
+        from google.genai import types
         client = genai.Client(
             api_key=_get_api_key(),
             http_options={"api_version": "v1beta"}
@@ -3171,9 +3567,10 @@ class JarvisLive:
 
         while True:
             try:
-                print("[JARVIS] 🔌 Conectando...")
+                print("[JARVIS] 🔌 Conectando...", flush=True)
                 self.ui.set_state("THINKING")
                 config = self._build_config()
+                print("[JARVIS] ⚙️ Config built, connecting...", flush=True)
 
                 async with (
                     client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
@@ -3182,13 +3579,15 @@ class JarvisLive:
                     self.session          = session
                     self._loop            = asyncio.get_event_loop()
                     self.audio_in_queue   = asyncio.Queue()
-                    self.out_queue        = asyncio.Queue(maxsize=5)  # buffer moderado — evita drops durante ráfagas de mic
+                    self.out_queue        = asyncio.Queue(maxsize=20)  # buffer generoso — evita drops durante herramientas lentas
                     self._turn_done_event = asyncio.Event()
                     self._reconnect_event = asyncio.Event()
 
                     print("[JARVIS] ✅ Conectado.")
                     self.ui.set_state("LISTENING")
                     self.ui.write_log("SYS: JARVIS en línea.")
+                    # Flush any text messages queued while session was unavailable
+                    tg.create_task(self._flush_pending_text())
                     reconnect_delay   = 1.0   # reset backoff on successful connection
                     consecutive_fails = 0
                     self._api_1011_tool = None   # clear 1011 tool tracker
@@ -3208,12 +3607,24 @@ class JarvisLive:
                         _hour = __import__("datetime").datetime.now().hour
                         if 6 <= _hour < 12 and not already_briefed_today():
                             async def _auto_brief():
-                                await asyncio.sleep(1)  # let session settle
+                                await asyncio.sleep(1)
                                 await self.session.send_client_content(
-                                    turns={"parts": [{"text": "[AUTO] Dame el informe matutino del día."}]},
+                                    turns={"parts": [{"text": "Da el informe matutino del día."}]},
                                     turn_complete=True
                                 )
                             tg.create_task(_auto_brief())
+
+                        # ── Aprendizaje de hábitos ──────────────────────────────
+                        if record_boot:
+                            self._loop.call_soon_threadsafe(record_boot)
+                        # Ejecutar hábitos de inicio automáticos
+                        try:
+                            from actions.habit_learner import get_habits_for_boot
+                            for h in get_habits_for_boot():
+                                self.ui.write_log(f"🔄 Hábito detectado: {h.get('name','')}")
+                                tg.create_task(self._run_learned_habit(h))
+                        except Exception:
+                            pass
 
                     tg.create_task(self._send_realtime())
                     tg.create_task(self._listen_audio())
@@ -3248,6 +3659,8 @@ class JarvisLive:
                                 "SYS: ⚠️ Error 1011 repetido. Esperando para no saturar la API...\n"
                                 "SYS: Si persiste más de 2 min, reiniciá JARVIS."
                             )
+                            self._show_notif("⚠️ Error 1011 repetido.\nEsperando 2 segundos para reconectar...",
+                                             icon="⚠️", timeout=5000, notif_type="warning")
                         elif tool_hint:
                             self.ui.write_log(f"SYS: Error de servidor al ejecutar '{tool_hint}'. Reconectando...")
                         else:
@@ -3256,6 +3669,7 @@ class JarvisLive:
                         # Model not available / wrong API version — log clearly, retry with same model
                         print(f"[JARVIS] ⚠️ Modelo no disponible en esta versión de API: {msg[:120]}")
                         self.ui.write_log("SYS: ⚠️ Modelo no disponible. Reintentando...")
+                        self._show_notif("⚠️ Modelo no disponible.\nRevisá la versión de la API.", icon="⚠️", timeout=5000, notif_type="warning")
                         consecutive_fails += 1
                     elif "1000" in msg or "going away" in msg.lower():
                         # Cierre normal de la sesión (expiró ~15 min) — silencioso
@@ -3315,9 +3729,24 @@ def main():
         """Show Welcome dialog → API key dialog → return."""
         from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
         from PyQt6.QtCore import Qt
-        from PyQt6.QtGui import QFont, QPixmap
+        from PyQt6.QtGui import QFont, QPixmap, QIcon
 
         app = QApplication.instance() or QApplication(sys.argv)
+
+        # ── Fijar ícono de aplicación para la barra de tareas de Windows ──
+        import ctypes
+        try:
+            # AppUserModelID — obliga a Windows a usar el ícono correcto en la taskbar
+            app_id = "JARVIS.Assistant"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+        except Exception:
+            pass
+        logo = Path(__file__).parent / "assets" / "logo.png"
+        ico = Path(__file__).parent / "assets" / "jarvis_icono.ico"
+        if logo.exists():
+            app.setWindowIcon(QIcon(str(logo)))
+        elif ico.exists():
+            app.setWindowIcon(QIcon(str(ico)))
 
         # Check if keys already exist first
         cfg = {}
@@ -3330,10 +3759,10 @@ def main():
         gemini = cfg.get("gemini_api_key", "").strip()
         openrouter = cfg.get("openrouter_api_key", "").strip()
 
-        if gemini and openrouter:
+        if not _is_placeholder(gemini) and not _is_placeholder(openrouter):
             return "no_tutorial"
 
-        # ── Welcome Dialog (only on first run, when no keys) ──
+        # ── Welcome Dialog (only when keys are missing or placeholders) ──
         welcome = QDialog()
         welcome.setWindowTitle("Bienvenido a JARVIS")
         welcome.setFixedSize(520, 460)
@@ -3365,9 +3794,7 @@ def main():
             "ver la pantalla, procesar archivos, generar imágenes,\n"
             "conectarte con Telegram y mucho más.\n"
             "\n"
-            "👤  Creado por Yonglly\n"
-            "📦  Basado en el código original de Dexter-666 (JARVIS v1)\n"
-            "💡  Modificado y mejorado con nuevas funcionalidades"
+            "👤  Autor: Yonglly"
         )
         desc.setWordWrap(True)
         desc.setStyleSheet("font-size: 13px; color: #c0c0d0; font-family: Segoe UI; line-height: 1.6; border: none;")
@@ -3376,12 +3803,25 @@ def main():
 
         wl.addStretch()
 
-        credit = QLabel("✨  ¡Gracias Dexter-666 por la base del proyecto!  ✨")
+        credit = QLabel("✨  JARVIS AI — Creado por Yonglly  ✨")
         credit.setStyleSheet("font-size: 11px; color: #e94560; font-family: Segoe UI; font-style: italic; border: none;")
         credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         wl.addWidget(credit)
 
         wl.addSpacing(8)
+
+        btn_row = QHBoxLayout()
+        skip_welcome = QPushButton("⏭  SALTAR")
+        skip_welcome.setStyleSheet("""
+            QPushButton {
+                background: transparent; color: #a0a0b0; border: 1px solid #555;
+                border-radius: 12px; padding: 14px 24px; font-size: 13px; font-weight: 600; font-family: Segoe UI;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.05); }
+        """)
+        skip_welcome.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip_welcome.clicked.connect(lambda: (setattr(welcome, "_skipped", True), welcome.accept()))
+        btn_row.addWidget(skip_welcome)
 
         next_btn = QPushButton("🚀  SIGUIENTE  →")
         next_btn.setStyleSheet("""
@@ -3392,14 +3832,17 @@ def main():
             QPushButton:hover { background: #c73652; }
         """)
         next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        wl.addWidget(next_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        btn_row.addWidget(next_btn)
+
+        wl.addLayout(btn_row)
 
         def _on_welcome_next():
             welcome.accept()
 
         next_btn.clicked.connect(_on_welcome_next)
-        if welcome.exec() != QDialog.DialogCode.Accepted:
-            sys.exit(0)
+        welcome.exec()
+        if getattr(welcome, "_skipped", False):
+            return "no_tutorial"
 
         # ── API Key Dialog ──
         dlg = QDialog()
@@ -3442,6 +3885,10 @@ def main():
                 font-family: Segoe UI;
             }
         """)
+        if _is_placeholder(gemini):
+            ig.setPlaceholderText("Ingresá tu Gemini API Key...")
+        else:
+            ig.setText(gemini)
         dl.addWidget(ig)
 
         lo = QLabel("OpenRouter API Key:")
@@ -3456,6 +3903,10 @@ def main():
                 font-family: Segoe UI;
             }
         """)
+        if _is_placeholder(openrouter):
+            io.setPlaceholderText("Ingresá tu OpenRouter API Key...")
+        else:
+            io.setText(openrouter)
         dl.addWidget(io)
 
         dl.addSpacing(8)
@@ -3472,6 +3923,19 @@ def main():
             API_CONFIG_PATH.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
             dlg.accept()
 
+        btn_row2 = QHBoxLayout()
+        skip_api = QPushButton("⏭  SALTAR")
+        skip_api.setStyleSheet("""
+            QPushButton {
+                background: transparent; color: #a0a0b0; border: 1px solid #555;
+                border-radius: 12px; padding: 12px 24px; font-size: 13px; font-weight: 600; font-family: Segoe UI;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.05); }
+        """)
+        skip_api.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip_api.clicked.connect(dlg.reject)
+        btn_row2.addWidget(skip_api)
+
         bs = QPushButton("💾  GUARDAR Y CONTINUAR")
         bs.setStyleSheet("""
             QPushButton {
@@ -3482,12 +3946,13 @@ def main():
         """)
         bs.setCursor(Qt.CursorShape.PointingHandCursor)
         bs.clicked.connect(_on_api_save)
-        dl.addWidget(bs)
+        btn_row2.addWidget(bs)
+
+        dl.addLayout(btn_row2)
 
         result = dlg.exec()
         if result != QDialog.DialogCode.Accepted:
-            sys.exit(0)
-        return "show_tutorial"
+            return "skip_keys"
 
     show_tutorial = _show_welcome_and_keys()
 
@@ -3594,7 +4059,9 @@ def main():
             print("\n🔴 Apagando...")
 
     threading.Thread(target=runner, daemon=True).start()
+    print("[MAIN] About to enter mainloop", flush=True)
     ui.root.mainloop()
+    print("[MAIN] mainloop returned", flush=True)
 
 if __name__ == "__main__":
     main()

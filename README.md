@@ -2,13 +2,11 @@
 
 Asistente virtual inteligente para Windows con interfaz bento, control por voz, procesamiento de archivos, agentes de IA y más.
 
-> Basado en el código original de **[Dexter-666](https://github.com/Dexter-666) (JARVIS v1)** — modificado, extendido y mejorado significativamente.
-
 ---
 
 ## ✨ Mejoras respecto a JARVIS v1 original
 
-| Aspecto | Original (Dexter-666) | Esta versión |
+| Aspecto | Original (v1) | Esta versión |
 |---------|----------------------|--------------|
 | **Interfaz** | Orbe 3D simple | Dashboard bento con widgets, personaje animado (VTuber), sidebar moderna |
 | **Chat** | Consola básica | Chat completo con historial, micrófono, stop, archivos adjuntos |
@@ -45,13 +43,13 @@ Asistente virtual inteligente para Windows con interfaz bento, control por voz, 
 ## 🚀 Instalación
 
 1. Instalá [Python 3.12](https://www.python.org/downloads/) (marcar "Add Python to PATH")
-2. Ejecutá **`Instalar_JARVIS.bat`** como Administrador
+2. Ejecutá **`install\Instalar_JARVIS.bat`** como Administrador
 3. Seguí el asistente — crea `.venv`, instala dependencias y genera acceso directo
-4. Iniciá desde el acceso directo del escritorio o con **`Iniciar JARVIS Beta.vbs`**
+4. Iniciá desde el acceso directo del escritorio o con **`install\Iniciar JARVIS Beta.vbs`**
 
 ## 🧹 Desinstalar
 
-Ejecutá **`Desinstalar_JARVIS.bat`** — modo ligero (solo `.venv` y caché) o completo.
+Ejecutá **`install\desinstalar_JARVIS.bat`** — modo ligero (solo `.venv` y caché) o completo.
 
 ## 🔐 Seguridad
 
@@ -60,6 +58,4 @@ Ejecutá **`Desinstalar_JARVIS.bat`** — modo ligero (solo `.venv` y caché) o 
 
 ---
 
-👤 **Creado por Yonglly**  
-📦 Basado en el código original de **Dexter-666** (JARVIS v1)  
-💡 Modificado y mejorado con nuevas funcionalidades
+👤 **Autor: Yonglly**

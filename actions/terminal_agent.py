@@ -25,11 +25,15 @@ def terminal_agent(parameters: dict, player=None) -> str:
         if shell_type == "cmd":
             cmd_args = ["cmd", "/c", command]
         else:
-            # PowerShell por defecto — UTF-8 forzado para salida limpia
+            # PowerShell con -EncodedCommand para evitar errores de sintaxis
+            # por caracteres especiales ($, ", {}, |, etc.)
+            import base64
+            full_cmd = f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}"
+            cmd_bytes = full_cmd.encode("utf-16le")
+            encoded = base64.b64encode(cmd_bytes).decode("ascii")
             cmd_args = [
                 "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-Command",
-                f"[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; {command}"
+                "-EncodedCommand", encoded
             ]
 
         env = os.environ.copy()

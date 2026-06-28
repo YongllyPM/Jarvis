@@ -1,7 +1,7 @@
 """ui.py — Professional Dark Bento PyQt6 Interface for JARVIS.
 Design: clean cards, subtle borders, system fonts, steel-blue accent."""
 from __future__ import annotations
-import sys, os, json, random, threading
+import sys, os, json, random, threading, uuid
 import psutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -11,10 +11,11 @@ from PyQt6.QtWidgets import (
     QGridLayout, QLabel, QPushButton, QLineEdit, QTextEdit, 
     QListWidget, QListWidgetItem, QProgressBar, QDialog, QMessageBox,
     QComboBox, QCheckBox, QSlider, QGraphicsDropShadowEffect, QScrollArea,
-    QMenu, QInputDialog, QFrame, QStackedWidget, QFileDialog
+    QGroupBox, QMenu, QInputDialog, QFrame, QStackedWidget, QFileDialog,
+    QCompleter, QFormLayout
 )
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal, pyqtSlot, QObject, QTimer, QSize, QPropertyAnimation, QPoint, QRect, QRectF
-from PyQt6.QtGui import QFont, QColor, QIcon, QMouseEvent, QPixmap, QPainter, QDesktopServices, QPainterPath, QPen
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, pyqtSlot, QObject, QTimer, QSize, QPropertyAnimation, QPoint, QRect, QRectF, QEasingCurve, QStringListModel, QEventLoop
+from PyQt6.QtGui import QFont, QColor, QIcon, QMouseEvent, QPixmap, QPainter, QBrush, QDesktopServices, QPainterPath, QPen
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebChannel import QWebChannel
@@ -65,6 +66,17 @@ FONT = "-apple-system, BlinkMacSystemFont, SF Pro Display, SF Pro Text, Inter, S
 GREEN = "#30D158"
 RED = "#FF453A"
 YELLOW = "#FFD60A"
+
+# ── Comandos rápidos (slash commands) ────────────────────────────────────────
+SLASH_COMMANDS = {
+    "/accion": "Ejecutar tarea compleja automática (descargar, instalar, navegar)",
+    "/crear":  "Crear: imagen, documento word, archivo de texto, etc.",
+    "/alarma": "Programar un recordatorio o alarma",
+    "/memoria": "Guardar información en la memoria permanente",
+    "/buscar": "Buscar información en internet",
+    "/notas":  "Leer o escribir en las notas",
+    "/ayuda":  "Mostrar esta lista de comandos",
+}
 
 def toggle_macos_theme():
     global _IS_DARK_MODE, _ACTIVE_MACOS_THEME
@@ -1193,11 +1205,15 @@ class NotesWidget(QWidget):
         save_notes_text(self.txt_notes.toPlainText())
 
     def get_notes_text(self) -> str:
+        # Thread-safe: read from file
         from memory.config_manager import load_notes_text
         return load_notes_text()
 
     def set_notes_text(self, text: str):
         self.txt_notes.setPlainText(text)
+        # Save immediately (skip debounce) so tool reads are consistent
+        from memory.config_manager import save_notes_text
+        save_notes_text(text)
 
     def update_style(self):
         self.setStyleSheet(f"""
@@ -1381,6 +1397,16 @@ class FilesCombinedWidget(QWidget):
         right.addWidget(self.gen_list, 1)
 
         # Image preview
+        self.image_paths: list = []
+        self.image_index: int = -1
+
+        # Container for image + overlay buttons
+        self.image_container = QWidget()
+        self.image_container.setObjectName("ImageContainer")
+        self.image_container.setLayout(QVBoxLayout())
+        self.image_container.layout().setContentsMargins(0, 0, 0, 0)
+        self.image_container.resizeEvent = lambda e: self._reposition_nav()
+
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumSize(160, 90)
@@ -1388,7 +1414,45 @@ class FilesCombinedWidget(QWidget):
         self.image_label.setText("🎨")
         self.image_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.image_label.mousePressEvent = self._on_image_click
-        right.addWidget(self.image_label, 0)
+        self.image_container.layout().addWidget(self.image_label)
+
+        # Navigation overlay (buttons on top of image)
+        nav = QWidget(self.image_container)
+        nav.setObjectName("ImageNavOverlay")
+        nav.setStyleSheet("background: rgba(0,0,0,0.50); border-radius: 4px;")
+        nav_layout = QHBoxLayout(nav)
+        nav_layout.setContentsMargins(2, 1, 2, 1)
+        nav_layout.setSpacing(1)
+
+        self.btn_img_prev = QPushButton("◀")
+        self.btn_img_prev.setFixedSize(16, 16)
+        self.btn_img_prev.setToolTip("Anterior")
+        self.btn_img_prev.clicked.connect(self._prev_image)
+        nav_layout.addWidget(self.btn_img_prev)
+
+        self.lbl_img_counter = QLabel("0/0")
+        self.lbl_img_counter.setFixedHeight(16)
+        self.lbl_img_counter.setStyleSheet("background: transparent; color: white; font-size: 8px; padding: 0 2px;")
+        nav_layout.addWidget(self.lbl_img_counter)
+
+        self.btn_img_next = QPushButton("▶")
+        self.btn_img_next.setFixedSize(16, 16)
+        self.btn_img_next.setToolTip("Siguiente")
+        self.btn_img_next.clicked.connect(self._next_image)
+        nav_layout.addWidget(self.btn_img_next)
+
+        nav_layout.addSpacing(4)
+
+        self.btn_img_delete = QPushButton("✕")
+        self.btn_img_delete.setFixedSize(16, 16)
+        self.btn_img_delete.setToolTip("Eliminar imagen")
+        self.btn_img_delete.setStyleSheet("QPushButton { background: rgba(200,50,50,0.8); border-radius: 3px; color: white; font-weight: bold; font-size: 10px; } QPushButton:hover { background: rgba(220,30,30,0.95); }")
+        self.btn_img_delete.clicked.connect(self._delete_current_image)
+        nav_layout.addWidget(self.btn_img_delete)
+
+        self._img_nav = nav
+
+        right.addWidget(self.image_container, 0)
 
         self.lbl_img_path = QLabel("Esperando imagen...")
         self.lbl_img_path.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1442,6 +1506,8 @@ class FilesCombinedWidget(QWidget):
 
     def display_image(self, path: str):
         self._current_path = path
+        if path not in self.image_paths:
+            self.image_paths.append(path)
         try:
             pixmap = QPixmap(path)
             if not pixmap.isNull():
@@ -1454,10 +1520,68 @@ class FilesCombinedWidget(QWidget):
         except Exception:
             self.image_label.setText("❌")
             self.lbl_img_path.setText("Error al cargar")
+        self._sync_nav_index()
+        self._reposition_nav()
+
+    def _sync_nav_index(self):
+        """Actualiza image_index según _current_path."""
+        if self._current_path in self.image_paths:
+            self.image_index = self.image_paths.index(self._current_path)
+        else:
+            self.image_index = -1
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self):
+        total = len(self.image_paths)
+        idx = self.image_index
+        visible = total > 0 and idx >= 0
+        self._img_nav.setVisible(visible)
+        if visible:
+            self.lbl_img_counter.setText(f"{idx+1}/{total}")
+            self.btn_img_prev.setEnabled(idx > 0)
+            self.btn_img_next.setEnabled(idx < total - 1)
+
+    def _reposition_nav(self):
+        nav = self._img_nav
+        nav.adjustSize()
+        c = self.image_container
+        nav.move(c.width() - nav.width() - 4, c.height() - nav.height() - 4)
+
+    def _prev_image(self):
+        if self.image_index > 0 and self.image_paths:
+            self.display_image(self.image_paths[self.image_index - 1])
+
+    def _next_image(self):
+        if self.image_index < len(self.image_paths) - 1 and self.image_paths:
+            self.display_image(self.image_paths[self.image_index + 1])
+
+    def _delete_current_image(self):
+        path = self._current_path
+        if path and os.path.isfile(path):
+            try:
+                os.remove(path)
+            except Exception:
+                return
+            if path in self.image_paths:
+                self.image_paths.remove(path)
+            idx = self.image_index
+            total = len(self.image_paths)
+            if total == 0:
+                self.image_label.clear()
+                self.image_label.setText("🎨")
+                self.lbl_img_path.setText("Imagen eliminada")
+                self._current_path = ""
+                self.image_index = -1
+                self._img_nav.setVisible(False)
+                self.refresh_generated()
+                return
+            next_idx = min(idx, total - 1)
+            self.display_image(self.image_paths[next_idx])
+            self.refresh_generated()
 
     # ── Generated files methods ────────────────────────────
     def refresh_generated(self):
-        gen_dir = Path(__file__).parent / "generated"
+        gen_dir = Path(__file__).resolve().parent.parent / "assets" / "generated"
         if not gen_dir.exists():
             self.gen_list.clear()
             self.gen_list.addItem("Sin archivos generados")
@@ -1471,6 +1595,9 @@ class FilesCombinedWidget(QWidget):
             item = QListWidgetItem(f.name)
             item.setData(Qt.ItemDataRole.UserRole, str(f.absolute()))
             self.gen_list.addItem(item)
+
+        self.image_paths = [str(f.absolute()) for f in files]
+        self._sync_nav_index()
 
     # ── Drag & drop ────────────────────────────────────────
     def dragEnterEvent(self, event):
@@ -1779,6 +1906,8 @@ class DeviceSettingsDialog(QDialog):
 
         nav_items = [
             ("🎨", "Apariencia", "apariencia"),
+            ("🔔", "Notificaciones", "notificaciones"),
+            ("🤖", "Agente", "agente"),
             ("🔑", "API Keys", "api"),
             ("🎤", "Audio", "audio"),
             ("🎵", "Música", "musica"),
@@ -1805,6 +1934,8 @@ class DeviceSettingsDialog(QDialog):
 
         # ── Build each page ────────────────────────────────────────────────────
         self._build_page_apariencia()
+        self._build_page_notificaciones()
+        self._build_page_agente()
         self._build_page_api()
         self._build_page_audio()
         self._build_page_musica()
@@ -1921,6 +2052,233 @@ class DeviceSettingsDialog(QDialog):
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.addWidget(scroll)
         self._pages["apariencia"] = page
+        self._stack.addWidget(page)
+
+    def _build_page_notificaciones(self):
+        page = QWidget()
+        page.setObjectName("SettingsPage")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("SettingsScroll")
+        content = QWidget()
+        content.setObjectName("SettingsScrollContent")
+        layout = QVBoxLayout(content)
+        layout.setSpacing(4)
+
+        group = QGroupBox("Notificaciones flotantes")
+        group.setObjectName("SettingsGroup")
+        g = QVBoxLayout(group)
+        g.setSpacing(6)
+
+        g.addWidget(QLabel("Ajustá la apariencia de las notificaciones emergentes."))
+
+        # ── Opacidad ──
+        notif_opacity_row = QHBoxLayout()
+        notif_opacity_row.addWidget(QLabel("Opacidad:"))
+        self.sld_notif_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.sld_notif_opacity.setRange(30, 100)
+        self.sld_notif_opacity.setValue(85)
+        self.sld_notif_opacity.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.sld_notif_opacity.setTickInterval(10)
+        self.lbl_notif_opacity_val = QLabel("85%")
+        self.lbl_notif_opacity_val.setFixedWidth(35)
+        self.sld_notif_opacity.valueChanged.connect(lambda v: self.lbl_notif_opacity_val.setText(f"{v}%"))
+        notif_opacity_row.addWidget(self.sld_notif_opacity)
+        notif_opacity_row.addWidget(self.lbl_notif_opacity_val)
+        g.addLayout(notif_opacity_row)
+
+        # ── Duración ──
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel("Duración (seg):"))
+        self.sld_notif_duration = QSlider(Qt.Orientation.Horizontal)
+        self.sld_notif_duration.setRange(1, 10)
+        self.sld_notif_duration.setValue(4)
+        self.sld_notif_duration.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.sld_notif_duration.setTickInterval(1)
+        self.lbl_notif_duration_val = QLabel("4s")
+        self.lbl_notif_duration_val.setFixedWidth(30)
+        self.sld_notif_duration.valueChanged.connect(lambda v: self.lbl_notif_duration_val.setText(f"{v}s"))
+        dur_row.addWidget(self.sld_notif_duration)
+        dur_row.addWidget(self.lbl_notif_duration_val)
+        g.addLayout(dur_row)
+
+        # ── Posición ──
+        pos_row = QHBoxLayout()
+        pos_row.addWidget(QLabel("Posición:"))
+        self.cmb_notif_position = QComboBox()
+        self.cmb_notif_position.addItem("Esquina inferior derecha", "bottom-right")
+        self.cmb_notif_position.addItem("Esquina inferior izquierda", "bottom-left")
+        self.cmb_notif_position.addItem("Esquina superior derecha", "top-right")
+        self.cmb_notif_position.addItem("Esquina superior izquierda", "top-left")
+        pos_row.addWidget(self.cmb_notif_position)
+        pos_row.addStretch()
+        g.addLayout(pos_row)
+
+        # ── Tips ──
+        self.chk_notif_tips = QCheckBox("Mostrar tips cada 1 min (consejos de salud, motivación, trucos)")
+        self.chk_notif_tips.setStyleSheet(f"font-size: 12px; color: {C_TEXT};")
+        g.addWidget(self.chk_notif_tips)
+
+        # ── Botón de prueba ──
+        test_row = QHBoxLayout()
+        self.btn_test_notif = QPushButton("🔔  Probar notificación")
+        self.btn_test_notif.setStyleSheet(f"""
+            QPushButton {{
+                background: {C_PRI}; color: white; border: none;
+                border-radius: 8px; padding: 8px 16px;
+                font-size: 12px; font-weight: 600;
+            }}
+            QPushButton:hover {{ background: {C_PRI_DIM}; }}
+        """)
+        self.btn_test_notif.clicked.connect(self._on_test_notification)
+        test_row.addWidget(self.btn_test_notif)
+        test_row.addStretch()
+        g.addLayout(test_row)
+
+        layout.addWidget(group)
+        layout.addStretch()
+        scroll.setWidget(content)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(scroll)
+        self._pages["notificaciones"] = page
+        self._stack.addWidget(page)
+
+    def _build_page_agente(self):
+        page = QWidget()
+        page.setObjectName("SettingsPage")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("SettingsScroll")
+        content = QWidget()
+        content.setObjectName("SettingsScrollContent")
+        layout = QVBoxLayout(content)
+        layout.setSpacing(15)
+        layout.setContentsMargins(24, 24, 24, 24)
+
+        layout.addWidget(QLabel("🤖  AGENTE AUTOMÁTICO"))
+        layout.addWidget(QLabel(
+            "Configura cómo se comporta el agente autónomo cuando ejecuta tareas "
+            "complejas en tu PC (descargar programas, navegar sitios, etc.)."
+        ))
+
+        group = QGroupBox("Comportamiento")
+        group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: 13px; font-weight: 600; color: {C_TEXT};
+                border: 1px solid {C_BORDER}; border-radius: 8px;
+                margin-top: 12px; padding-top: 16px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin; subcontrol-position: top left;
+                padding: 0 6px; color: {C_PRI};
+            }}
+        """)
+        g = QVBoxLayout(group)
+        g.setSpacing(10)
+        g.setContentsMargins(15, 15, 15, 15)
+
+        self.chk_agent_ask_mode = QCheckBox(
+            "Preguntar modo (foreground/background) al ejecutar el agente"
+        )
+        self.chk_agent_ask_mode.setStyleSheet(f"font-size: 12px; color: {C_TEXT};")
+        g.addWidget(self.chk_agent_ask_mode)
+
+        desc = QLabel(
+            "Si activás esta opción, la IA te preguntará en el chat si querés "
+            "ejecutar la tarea en primer plano (visible) o segundo plano (oculto).\n"
+            "Si la desactivás, se usará el modo por defecto que elijas abajo."
+        )
+        desc.setStyleSheet(f"font-size: 11px; color: {C_TEXT}; padding-left: 20px;")
+        desc.setWordWrap(True)
+        g.addWidget(desc)
+
+        def_row = QHBoxLayout()
+        def_row.addWidget(QLabel("Modo por defecto:"))
+        self.cmb_agent_default_mode = QComboBox()
+        self.cmb_agent_default_mode.addItem("Primer plano (visible)", "foreground")
+        self.cmb_agent_default_mode.addItem("Segundo plano (oculto)", "background")
+        def_row.addWidget(self.cmb_agent_default_mode)
+        def_row.addStretch()
+        g.addLayout(def_row)
+
+        layout.addWidget(group)
+
+        # ── Grupo: Archivos generados ──
+        save_group = QGroupBox("Archivos generados")
+        save_group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: 13px; font-weight: 600; color: {C_TEXT};
+                border: 1px solid {C_BORDER}; border-radius: 8px;
+                margin-top: 12px; padding-top: 16px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin; subcontrol-position: top left;
+                padding: 0 6px; color: {C_PRI};
+            }}
+        """)
+        sg = QVBoxLayout(save_group)
+        sg.setSpacing(8)
+        sg.setContentsMargins(15, 15, 15, 15)
+
+        sg.addWidget(QLabel("Carpeta predeterminada para guardar archivos generados\n(cuando no se especifica una ruta):"))
+
+        path_row = QHBoxLayout()
+        self.lbl_save_path = QLabel(str(Path.home() / "Desktop"))
+        self.lbl_save_path.setStyleSheet(f"color: {C_PRI_DIM}; font-size: 11px;")
+        self.lbl_save_path.setWordWrap(True)
+        path_row.addWidget(self.lbl_save_path, 1)
+        self.btn_browse_save_path = QPushButton("📁 Examinar…")
+        self.btn_browse_save_path.clicked.connect(self._on_browse_save_path)
+        path_row.addWidget(self.btn_browse_save_path)
+        sg.addLayout(path_row)
+
+        self.btn_reset_save_path = QPushButton("↺ Restaurar predeterminado (Escritorio)")
+        self.btn_reset_save_path.setStyleSheet(f"QPushButton {{ color: {C_PRI}; font-size: 11px; border: none; }} QPushButton:hover {{ color: {C_PRI_DIM}; }}")
+        self.btn_reset_save_path.clicked.connect(lambda: self._set_save_path(str(Path.home() / "Desktop")))
+        sg.addWidget(self.btn_reset_save_path)
+
+        layout.addWidget(save_group)
+
+        # ── Grupo: Aprendizaje de hábitos ──
+        learn_group = QGroupBox("Aprendizaje de hábitos")
+        learn_group.setStyleSheet(f"""
+            QGroupBox {{
+                font-size: 13px; font-weight: 600; color: {C_TEXT};
+                border: 1px solid {C_BORDER}; border-radius: 8px;
+                margin-top: 12px; padding-top: 16px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin; subcontrol-position: top left;
+                padding: 0 6px; color: {C_PRI};
+            }}
+        """)
+        lg = QVBoxLayout(learn_group)
+        lg.setSpacing(10)
+        lg.setContentsMargins(15, 15, 15, 15)
+
+        self.chk_habits_learning = QCheckBox(
+            "Activar monitoreo de hábitos en segundo plano"
+        )
+        self.chk_habits_learning.setStyleSheet(f"font-size: 12px; color: {C_TEXT};")
+        lg.addWidget(self.chk_habits_learning)
+
+        desc2 = QLabel(
+            "Al activarlo, JARVIS monitorea cada 8 segundos la ventana activa "
+            "para detectar patrones de uso y sugerir automatizaciones.\n"
+            "Desactivar puede mejorar privacidad y reducir uso de CPU."
+        )
+        desc2.setStyleSheet(f"font-size: 11px; color: {C_TEXT}; padding-left: 20px;")
+        desc2.setWordWrap(True)
+        lg.addWidget(desc2)
+
+        layout.addWidget(learn_group)
+        layout.addStretch()
+        scroll.setWidget(content)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(scroll)
+        self._pages["agente"] = page
         self._stack.addWidget(page)
 
     def _build_page_api(self):
@@ -2437,6 +2795,29 @@ class DeviceSettingsDialog(QDialog):
             self._bg_image_path = path
             self._bg_path_label.setText(Path(path).name)
 
+    def _on_browse_save_path(self):
+        path = QFileDialog.getExistingDirectory(self, "Seleccionar carpeta de guardado")
+        if path:
+            self._set_save_path(path)
+
+    def _set_save_path(self, path: str):
+        self.lbl_save_path.setText(path)
+
+    def _on_test_notification(self):
+        parent = self.parent()
+        if parent and hasattr(parent, "_show_notification"):
+            parent._show_notification(
+                "🔔 Esta es una notificación de prueba.\nSe cerrará automáticamente.",
+                icon="🔔",
+                timeout=3000,
+                notif_type="info"
+            )
+        else:
+            # Fallback: show directly
+            from ui import NotificationOverlay
+            n = NotificationOverlay()
+            n.show_notification("🔔 Notificación de prueba.\nSe cierra sola.", icon="🔔", timeout=3000, notif_type="info")
+
     def _open_scenes(self):
         dialog = ScenesDialog(self)
         dialog.exec()
@@ -2537,6 +2918,31 @@ class DeviceSettingsDialog(QDialog):
             self._tg_token.setText(tg_token)
             self._tg_enabled.setChecked(tg_enabled)
 
+            # Load notification config
+            notif_opacity = int(cfg.get("notif_opacity", 85))
+            self.sld_notif_opacity.setValue(notif_opacity)
+            self.lbl_notif_opacity_val.setText(f"{notif_opacity}%")
+            notif_duration = int(cfg.get("notif_duration", 4))
+            self.sld_notif_duration.setValue(notif_duration)
+            self.lbl_notif_duration_val.setText(f"{notif_duration}s")
+            notif_pos = cfg.get("notif_position", "bottom-right")
+            idx = self.cmb_notif_position.findData(notif_pos)
+            if idx >= 0:
+                self.cmb_notif_position.setCurrentIndex(idx)
+            self.chk_notif_tips.setChecked(cfg.get("notif_tips_enabled", False))
+
+            # Load agent config
+            self.chk_agent_ask_mode.setChecked(cfg.get("agent_ask_mode", False))
+            default_mode = cfg.get("agent_default_mode", "foreground")
+            idx = self.cmb_agent_default_mode.findData(default_mode)
+            if idx >= 0:
+                self.cmb_agent_default_mode.setCurrentIndex(idx)
+            saved_path = cfg.get("default_save_path", "")
+            self.lbl_save_path.setText(saved_path or str(Path.home() / "Desktop"))
+
+            # Load habits learning config
+            self.chk_habits_learning.setChecked(cfg.get("habits_learning_enabled", True))
+
         except Exception:
             pass
             
@@ -2563,7 +2969,15 @@ class DeviceSettingsDialog(QDialog):
                 "timezone": self.cmb_timezone.currentData(),
                 "ubicacion": self.cmb_ubicacion.currentText(),
                 "telegram_token": self._tg_token.text().strip(),
-                "telegram_enabled": self._tg_enabled.isChecked()
+                "telegram_enabled": self._tg_enabled.isChecked(),
+                "notif_opacity": self.sld_notif_opacity.value(),
+                "notif_duration": self.sld_notif_duration.value(),
+                "notif_position": self.cmb_notif_position.currentData(),
+                "notif_tips_enabled": self.chk_notif_tips.isChecked(),
+                "agent_ask_mode": self.chk_agent_ask_mode.isChecked(),
+                "agent_default_mode": self.cmb_agent_default_mode.currentData(),
+                "default_save_path": self.lbl_save_path.text(),
+                "habits_learning_enabled": self.chk_habits_learning.isChecked(),
             }
             save_api_keys(cfg)
 
@@ -2572,6 +2986,7 @@ class DeviceSettingsDialog(QDialog):
                 parent.update_theme_styles()
                 parent._update_orb_visual()
                 parent._restart_telegram()
+                parent._restart_habits_tracker()
 
             self.accept()
         except Exception as e:
@@ -2849,7 +3264,14 @@ class MainWindow(QMainWindow):
     def _load_icon(self):
         svg_path = Path(__file__).parent / "assets" / "jarvis_icono.svg"
         ico_path = Path(__file__).parent / "assets" / "jarvis_icono.ico"
-        if svg_path.exists():
+        png_path = Path(__file__).parent / "assets" / "logo.png"
+        # PNG from assets/
+        if png_path.exists():
+            icon = QIcon(str(png_path))
+            self.setWindowIcon(icon)
+            if hasattr(self, "tray_icon") and self.tray_icon:
+                self.tray_icon.setIcon(icon)
+        elif svg_path.exists():
             pix = QPixmap()
             svg = QSvgRenderer(str(svg_path))
             pix = QPixmap(256, 256)
@@ -2894,6 +3316,14 @@ class MainWindow(QMainWindow):
         self.btn_sidebar_tutorial.setCheckable(True)
         self.btn_sidebar_tutorial.clicked.connect(lambda: self._show_content_page(2))
         sidebar_layout.addWidget(self.btn_sidebar_tutorial, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.btn_sidebar_macros = QPushButton("⚡")
+        self.btn_sidebar_macros.setObjectName("SidebarBtn")
+        self.btn_sidebar_macros.setToolTip("Macros")
+        self.btn_sidebar_macros.setFixedSize(44, 44)
+        self.btn_sidebar_macros.setCheckable(True)
+        self.btn_sidebar_macros.clicked.connect(lambda: self._show_content_page(3))
+        sidebar_layout.addWidget(self.btn_sidebar_macros, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self.btn_sidebar_store = QPushButton("🛒")
         self.btn_sidebar_store.setObjectName("SidebarBtn")
@@ -3035,8 +3465,19 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.btn_mic)
 
         self.txt_input = QLineEdit()
-        self.txt_input.setPlaceholderText("Escribe un mensaje a JARVIS...")
+        self.txt_input.setPlaceholderText("Escribe un mensaje a JARVIS... (/ayuda)")
         self.txt_input.returnPressed.connect(self._send_text_message)
+
+        # ── Slash-command completer ──
+        self._cmd_model = QStringListModel(list(SLASH_COMMANDS.keys()))
+        self._cmd_completer = QCompleter(self._cmd_model, self.txt_input)
+        self._cmd_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._cmd_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._cmd_completer.setCompletionPrefix("")
+        self._cmd_completer.popup().setStyleSheet("font-size: 12px; padding: 4px;")
+        self.txt_input.setCompleter(self._cmd_completer)
+        self.txt_input.textChanged.connect(self._on_input_changed)
+
         input_layout.addWidget(self.txt_input, 1)
 
         self.btn_stop = QPushButton("⏹")
@@ -3058,10 +3499,23 @@ class MainWindow(QMainWindow):
         self._tutorial_page = TutorialesPage(self)
         self.agents_stack.addWidget(self._tutorial_page)
 
+        self._macros_page = MacrosPage(self)
+        self.agents_stack.addWidget(self._macros_page)
+        self._macro_editor = None
+
+        # ── Notification overlay (top-level floating, no parent) ──
+        self._notif = NotificationOverlay()
+        self._notif.hide()
+
         self.update_theme_styles()
         self._update_orb_visual()
         self._drag_pos = None
         self._shutdown_sig.connect(self._handle_shutdown)
+
+        # ── Startup notification ──
+        QTimer.singleShot(1500, lambda: self._show_notification(
+            "🤖 JARVIS iniciado correctamente.\nPresioná Insert para hablar.", icon="🚀", timeout=4000, notif_type="success"
+        ))
 
         # ── Telegram Bot ─────────────────────────────────────────────────────
         self._telegram = TelegramBot(self)
@@ -3086,9 +3540,32 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"[Telegram] Error restarting: {e}")
 
+    def _restart_habits_tracker(self):
+        try:
+            from actions.habits_tracker import start_tracker, stop_tracker
+            from memory.config_manager import load_api_keys
+            cfg = load_api_keys()
+            enabled = cfg.get("habits_learning_enabled", True)
+            if enabled:
+                stop_tracker()
+                start_tracker(player=self, speak=None)
+            else:
+                stop_tracker()
+        except Exception as e:
+            print(f"[Hábitos] Error restarting tracker: {e}")
+
     @property
     def telegram_bot(self):
         return self._telegram
+
+    def _on_input_changed(self, text: str):
+        if text.startswith("/"):
+            partial = text[1:]
+            self._cmd_completer.setCompletionPrefix(partial)
+            if self._cmd_completer.completionCount() > 0:
+                self._cmd_completer.complete()
+        else:
+            self._cmd_completer.popup().hide()
 
     def _send_text_message(self):
         text = self.txt_input.text().strip()
@@ -3102,10 +3579,11 @@ class MainWindow(QMainWindow):
             self.ui.on_stop_command()
 
     def _show_content_page(self, index: int):
-        """0 = Inicio, 1 = Agentes, 2 = Tutoriales"""
+        """0 = Inicio, 1 = Agentes, 2 = Tutoriales, 3 = Macros"""
         self.btn_sidebar_home.setChecked(index == 0)
         self.btn_sidebar_agents.setChecked(index == 1)
         self.btn_sidebar_tutorial.setChecked(index == 2)
+        self.btn_sidebar_macros.setChecked(index == 3)
         if index == 0:
             self.agents_stack.hide()
             self.orb.show()
@@ -3125,6 +3603,9 @@ class MainWindow(QMainWindow):
                 self.agents_stack.setCurrentWidget(self._agents_list_page)
             elif index == 2:
                 self.agents_stack.setCurrentWidget(self._tutorial_page)
+            elif index == 3:
+                self.agents_stack.setCurrentWidget(self._macros_page)
+                self._macros_page.refresh()
 
     def _start_agent_chat(self, provider: str, api_key: str, model: str):
         """Create or switch to agent chat for the given provider."""
@@ -3332,6 +3813,17 @@ class MainWindow(QMainWindow):
             self.orb.update_style()
             self.orb.sync_theme()
 
+        if hasattr(self, "_tutorial_page"):
+            self._tutorial_page.update_style()
+        if hasattr(self, "_agents_list_page"):
+            self._agents_list_page.update_style()
+        if hasattr(self, "_agent_chat") and self._agent_chat:
+            self._agent_chat.update_style()
+
+        if hasattr(self, "_notif"):
+            self._notif.update_style()
+            self._configure_notification()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         W = self.central_widget.width()
@@ -3381,6 +3873,9 @@ class MainWindow(QMainWindow):
         self.orb.raise_()
         if self.agents_stack.isVisible():
             self.agents_stack.raise_()
+        if hasattr(self, "_notif") and self._notif.isVisible():
+            self._notif._reposition()
+            self._notif.raise_()
         self._bg_label.lower()
 
     def _open_settings(self):
@@ -3420,6 +3915,24 @@ class MainWindow(QMainWindow):
             visual = "sphere"
         if hasattr(self, "orb"):
             self.orb._load_visual(visual)
+
+    def _show_notification(self, text: str, icon: str = "ℹ️", timeout: int | None = None, notif_type: str = "info"):
+        if hasattr(self, "_notif"):
+            self._notif.show_notification(text, icon, timeout, notif_type)
+
+    def _configure_notification(self):
+        """Load notification config from api_keys.json and apply to overlay."""
+        try:
+            from memory.config_manager import load_api_keys
+            cfg = load_api_keys()
+            opacity = float(cfg.get("notif_opacity", 0.85)) / 100.0
+            duration = int(cfg.get("notif_duration", 4)) * 1000
+            position = cfg.get("notif_position", "bottom-right")
+            tips = cfg.get("notif_tips_enabled", False)
+            if hasattr(self, "_notif"):
+                self._notif.update_config(opacity, duration, position, tips)
+        except Exception:
+            pass
 
     def _check_for_updates(self):
         try:
@@ -3651,6 +4164,8 @@ class MainWindow(QMainWindow):
         else:
             event.ignore()
             self.hide()
+            self._show_notification("JARVIS sigue activo en segundo plano.\nHacé doble clic en el icono para mostrarlo.",
+                                     icon="💤", timeout=4000, notif_type="info")
             if hasattr(self, "tray_icon") and self.tray_icon.isVisible():
                 from PyQt6.QtWidgets import QSystemTrayIcon
                 self.tray_icon.showMessage(
@@ -3685,14 +4200,21 @@ class MockRoot:
 class _ConsoleBridge(QObject):
     """Bridge to safely update txt_console from any thread via signals."""
     text_ready = pyqtSignal(str)
+    append_line = pyqtSignal(str)
 
     def __init__(self, console):
         super().__init__()
         self.console = console
         self.text_ready.connect(self._set_text)
+        self.append_line.connect(self._append_line)
 
     def _set_text(self, text: str):
         self.console.setPlainText(text)
+        sb = self.console.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _append_line(self, text: str):
+        self.console.append(text)
         sb = self.console.verticalScrollBar()
         sb.setValue(sb.maximum())
 
@@ -3714,8 +4236,7 @@ class JarvisUI:
         self._win = MainWindow(self, face_path)
         self._win.show()
         
-        # Ensure startup shortcut is set up after 2 seconds (so it doesn't block startup)
-        QTimer.singleShot(2000, self.ensure_startup_shortcut)
+        # (Startup shortcut removed — caused UAC prompt)
         
         # Auto-start Telegram bot if configured
         QTimer.singleShot(3000, self._win._restart_telegram)
@@ -3729,7 +4250,16 @@ class JarvisUI:
             self._win.file_w.refresh_generated()
 
     def write_log(self, text: str):
-        pass
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda win=self._win, t=text: (
+            hasattr(win, '_console_bridge') and win._console_bridge
+            and (
+                win._console_bridge.console.append(t),
+                win._console_bridge.console.verticalScrollBar().setValue(
+                    win._console_bridge.console.verticalScrollBar().maximum()
+                )
+            )
+        ))
         
     def set_state(self, state: str):
         self._win.orb.set_state(state)
@@ -3762,35 +4292,9 @@ class JarvisUI:
         if hasattr(self._win, "telegram_bot"):
             self._win.telegram_bot.send_message(text)
 
-    def ensure_startup_shortcut(self):
-        try:
-            import os
-            import subprocess
-            appdata = os.getenv('APPDATA')
-            if not appdata:
-                return
-            startup_dir = os.path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup')
-            shortcut_path = os.path.join(startup_dir, 'JARVIS AI.lnk')
-            
-            current_dir = os.path.abspath(os.path.dirname(__file__))
-            target_vbs = os.path.join(current_dir, "Iniciar JARVIS Beta.vbs")
-            icon_path = os.path.join(current_dir, "assets", "jarvis_icono.ico")
-            
-            if not os.path.exists(target_vbs):
-                return
-                
-            ps_cmd = (
-                f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{shortcut_path}');"
-                f"$s.TargetPath='{target_vbs}';"
-                f"$s.WorkingDirectory='{current_dir}';"
-                f"$s.IconLocation='{icon_path}';"
-                f"$s.Description='Lanzador Automatico de JARVIS AI (Admin)';"
-                f"$s.Save()"
-            )
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            print("[STARTUP] Startup shortcut ensured successfully.")
-        except Exception as e:
-            print(f"[STARTUP] Error ensuring startup shortcut: {e}")
+    @staticmethod
+    def ensure_startup_shortcut():
+        pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4142,6 +4646,9 @@ class AgentsListPage(QWidget):
                 f"No se pudo instalar '{pip_name}':\n{e}")
             return False
 
+    def update_style(self):
+        pass
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tutoriales Page
@@ -4155,6 +4662,11 @@ class TutorialesPage(QWidget):
         super().__init__()
         self._mw = main_window
         self.setObjectName("TutorialesPage")
+        self._card_widgets: list = []
+        self._sep_labels: list = []
+        self._discord_card: QWidget | None = None
+        self._discord_title: QLabel | None = None
+        self._discord_btns: list = []
         self._build_ui()
 
     def _build_ui(self):
@@ -4195,6 +4707,48 @@ class TutorialesPage(QWidget):
             ("🎤  Usar comandos de voz",
              "1. El micrófono se activa automáticamente al iniciar\n2. Hacé clic en 🎤 para silenciar/activar el micrófono\n3. Hablá normalmente y JARVIS responde\n4. También podés escribir mensajes en el campo de texto",
              "voice"),
+
+            ("──── 🔌  CONFIGURACIÓN AVANZADA ────", "", "sep"),
+
+            ("🗂️  Google Calendar — OAuth",
+             "1. Andá a https://console.cloud.google.com/ y creá un proyecto\n2. Habilitá «Google Calendar API»\n3. Creá «Credenciales» → «ID de cliente OAuth 2.0» → «Aplicación de escritorio»\n4. Descargá el JSON y renombralo a «google_credentials.json»\n5. Copialo a la carpeta «config/» de JARVIS\n6. Pedile a JARVIS: «Mostrame mis eventos de hoy»",
+             "keys"),
+
+            ("📧  Gmail — OAuth",
+             "1. Mismo proyecto de Google Cloud que Calendar\n2. Habilitá «Gmail API»\n3. Usá las mismas credenciales OAuth (google_credentials.json en config/)\n4. Pedile a JARVIS: «Leé mis correos sin leer»",
+             "keys"),
+
+            ("☁️  Google Drive — OAuth",
+             "1. Mismo proyecto de Google Cloud\n2. Habilitá «Google Drive API»\n3. Mismo google_credentials.json en config/\n4. Pedile a JARVIS: «Listá mis archivos de Drive»",
+             "keys"),
+
+            ("📍  Google Maps — API Key",
+             "1. Búsquedas y direcciones funcionan GRATIS con OpenStreetMap (sin config)\n2. Para mejor calidad: console.cloud.google.com → habilitá Maps y Geocoding API\n3. Creá una «Clave de API»\n4. Agregala en config/api_keys.json como «google_maps_key»",
+             "keys"),
+
+            ("✈️  AviationStack — Vuelos",
+             "1. Registrate gratis en https://aviationstack.com/\n2. Confirmá email y obtené tu API Key\n3. Abrí «config/api_keys.json» y agregá: «aviationstack_key»: «TU_CLAVE»\n4. Pedile a JARVIS: «Buscá vuelos de EZE a MAD»",
+             "keys"),
+
+            ("🐦  Twitter — Bearer Token",
+             "1. Andá a https://developer.twitter.com/ y creá una app\n2. Solicitá acceso a API v2 (free tier)\n3. Generá un «Bearer Token»\n4. En api_keys.json agregá: «twitter_bearer_token»: «TU_TOKEN»\n5. Pedile: «Publicá en Twitter: Hola mundo»",
+             "keys"),
+
+            ("💬  Discord — Webhook",
+             "1. Abrí un canal de Discord → ⚙️ → Integraciones → Webhooks\n2. Creá un webhook y copiá la URL\n3. En api_keys.json agregá: «discord_webhook»: «URL»\n4. Pedile a JARVIS: «Enviá un mensaje a Discord»",
+             "keys"),
+
+            ("🎵  TikTok — API Key (opcional)",
+             "1. Tendencias funcionan SIN API key\n2. Para datos de usuario: registrate en https://rapidapi.com/\n3. Buscá «TikTok API v23» y suscribite\n4. Copiá la X-RapidAPI-Key\n5. En api_keys.json: «tiktok_api_key»: «TU_CLAVE»\n6. Pedile: «Mostrame info del usuario @tiktok»",
+             "keys"),
+
+            ("💡  WLED / OpenRGB — Luces",
+             "1. Para LEDs con WLED: conectá el microcontrolador a tu WiFi\n2. Averiguá su IP y pedile a JARVIS: «Poné las luces rojas»\n3. Para OpenRGB: descargalo de openrgb.org\n4. Activá «SDK Server» en Settings → JARVIS lo detecta solo",
+             "config"),
+
+            ("🙋  Smart Home — General",
+             "1. JARVIS detecta OpenRGB automáticamente\n2. Para Home Assistant: configurá el bridge en tu red\n3. Para Philips Hue: conectá el bridge al router\n4. Pedile: «Apagá las luces de la sala» (simulado sin hub)",
+             "config"),
         ]
 
         scroll = QScrollArea()
@@ -4206,7 +4760,15 @@ class TutorialesPage(QWidget):
         cards_layout.setSpacing(10)
         cards_layout.setContentsMargins(0, 0, 0, 0)
 
-        for title_text, steps, _ in cards:
+        for title_text, steps, tag in cards:
+            if tag == "sep":
+                sep = QLabel(title_text)
+                sep.setStyleSheet(f"font-weight: 700; font-size: 13px; color: {C_PRI_DIM}; padding: 8px 0;")
+                cards_layout.addWidget(sep)
+                self._card_widgets.append(sep)
+                self._sep_labels.append(sep)
+                continue
+
             card = QWidget()
             card.setObjectName("TutorialCard")
             card.setStyleSheet(f"""
@@ -4230,11 +4792,13 @@ class TutorialesPage(QWidget):
             cl.addWidget(steps_lbl)
 
             cards_layout.addWidget(card)
+            self._card_widgets.append((card, lbl, steps_lbl))
 
         # ── Discord support ──
         sep = QLabel("❓  ¿Necesitás ayuda?")
         sep.setStyleSheet("font-weight: 700; font-size: 14px; margin-top: 12px;")
         cards_layout.addWidget(sep)
+        self._card_widgets.append(sep)
 
         disc = QWidget()
         disc.setObjectName("TutorialCard")
@@ -4244,11 +4808,13 @@ class TutorialesPage(QWidget):
                 border-radius: 12px; padding: 8px;
             }}
         """)
+        self._discord_card = disc
         dl = QVBoxLayout(disc)
         dl.setContentsMargins(16, 12, 16, 12)
         dl.setSpacing(6)
         dc = QLabel("💬  Canal de ayuda en Discord")
         dc.setStyleSheet("font-weight: 600; font-size: 13px;")
+        self._discord_title = dc
         dl.addWidget(dc)
 
         for label, url in [("🔰  Canal de saludos", self.DGREET),
@@ -4268,6 +4834,7 @@ class TutorialesPage(QWidget):
             row.addWidget(btn)
             row.addStretch()
             dl.addLayout(row)
+            self._discord_btns.append(btn)
 
         cards_layout.addWidget(disc)
         cards_layout.addStretch()
@@ -4276,7 +4843,38 @@ class TutorialesPage(QWidget):
         layout.addWidget(scroll)
 
     def update_style(self):
-        pass
+        for w in self._card_widgets:
+            if isinstance(w, QLabel):
+                w.setStyleSheet(f"font-weight: 700; font-size: 13px; color: {C_PRI_DIM}; padding: 8px 0;")
+                continue
+            card, lbl, steps_lbl = w
+            card.setStyleSheet(f"""
+                QWidget#TutorialCard {{
+                    background: {C_CARD_BG}; border: 1px solid {C_BORDER};
+                    border-radius: 12px; padding: 16px;
+                }}
+                QLabel {{ color: {C_TEXT}; font-family: {FONT}; }}
+            """)
+            lbl.setStyleSheet("font-weight: 700; font-size: 14px;")
+            steps_lbl.setStyleSheet(f"font-size: 12px; color: {C_PRI_DIM}; line-height: 1.5;")
+        if self._discord_card:
+            self._discord_card.setStyleSheet(f"""
+                QWidget#TutorialCard {{
+                    background: {C_CARD_BG}; border: 1px solid {C_BORDER};
+                    border-radius: 12px; padding: 8px;
+                }}
+            """)
+        if self._discord_title:
+            self._discord_title.setStyleSheet("font-weight: 600; font-size: 13px;")
+        for btn in self._discord_btns:
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: #5865F2; border: none; border-radius: 8px;
+                    padding: 8px 14px; color: white; font-weight: 600;
+                    font-size: 12px; font-family: {FONT};
+                }}
+                QPushButton:hover {{ background: #4752C4; }}
+            """)
 
 
 class AgentChatWidget(QWidget):
@@ -4483,6 +5081,196 @@ class AgentChatWidget(QWidget):
     @pyqtSlot(str)
     def _on_response(self, text: str):
         self._append_message("assistant", text)
+
+    def update_style(self):
+        pass
+
+
+class NotificationOverlay(QWidget):
+    """Floating semi-transparent notification that auto-dismisses (screen-level overlay)."""
+
+    TIPS = [
+        ("💡", "Usá «abr…» para abrir apps sin usar el mouse."),
+        ("💡", "Decí «tomá una foto» para sacar una foto con la cámara."),
+        ("💡", "Podés arrastrar archivos a JARVIS para procesarlos."),
+        ("💡", "Probá «buscá en la web…» para buscar info sin abrir el navegador."),
+        ("💡", "Usá «recordame…» para crear recordatorios."),
+        ("💡", "Podés cambiar el personaje haciendo clic en el orbe."),
+        ("💡", "Decí «apagá las luces» si tenés WLED u OpenRGB."),
+        ("💡", "Usá «escribí un mail…» si configuraste Gmail."),
+        ("💡", "Probá «mostrá mis eventos» si vinculaste Google Calendar."),
+        ("💡", "Podés tomar un descanso de 5 min cada 1 hora de uso."),
+        ("💡", "Parpadeá seguido para evitar fatiga visual frente a la pantalla."),
+        ("💡", "Mantené una postura erguida al usar la PC."),
+        ("💡", "Tomá agua regularmente mientras trabajás."),
+        ("💡", "Hacé estiramientos de cuello y hombros cada 2 horas."),
+        ("💡", "Ajustá el brillo de tu pantalla según la luz ambiente."),
+        ("💡", "Usá la regla 20-20-20: cada 20 min mirá algo a 20 pies por 20 seg."),
+        ("💡", "La constancia vence lo que el talento no puede."),
+        ("💡", "No se trata de tener tiempo, se trata de priorizar."),
+        ("💡", "Cada día es una nueva oportunidad para mejorar."),
+        ("💡", "El conocimiento es el único tesoro que crece cuando se comparte."),
+        ("💡", "Decí «abrí la calculadora» para hacer cuentas rápido."),
+        ("💡", "Podés preguntarme «¿cómo se dice… en inglés?» para traducciones."),
+        ("💡", "Usá el atajo Insert (INS) para activar JARVIS desde cualquier lado."),
+        ("💡", "Decí «contá un chiste» cuando necesites alegrar el momento."),
+        ("💡", "Podés subir una imagen y preguntar qué contiene."),
+    ]
+
+    NOTIF_COLORS = {
+        "info":    QColor("#1565C0"),
+        "warning": QColor("#E65100"),
+        "error":   QColor("#C62828"),
+        "success": QColor("#2E7D32"),
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+            | Qt.WindowType.WindowTransparentForInput
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+
+        self._notif_opacity = 0.85
+        self._notif_duration = 4000
+        self._notif_position = "bottom-right"
+        self._notif_type = "info"
+        self._margin = 24
+        self._notif_width = 380
+        self._tips_enabled = False
+        self._tips_interval = 60000
+        self._tip_index = 0
+
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._start_fade_out)
+
+        self._fade_anim = QPropertyAnimation(self, b"windowOpacity")
+        self._fade_anim.setDuration(400)
+        self._fade_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._fade_anim.finished.connect(self._on_fade_done)
+
+        self._tips_timer = QTimer(self)
+        self._tips_timer.timeout.connect(self._show_random_tip)
+
+        self._build_ui()
+        self.hide()
+
+    def _build_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(8)
+
+        self._icon_label = QLabel("ℹ️")
+        layout.addWidget(self._icon_label)
+
+        self._text_label = QLabel("")
+        self._text_label.setWordWrap(True)
+        self._text_label.setMaximumWidth(self._notif_width)
+        layout.addWidget(self._text_label, 1)
+
+        self.adjustSize()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        color = self.NOTIF_COLORS.get(self._notif_type, self.NOTIF_COLORS["info"])
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(self.rect(), 6, 6)
+
+        super().paintEvent(event)
+
+    def show_notification(self, text: str, icon: str = "ℹ️", timeout: int | None = None, notif_type: str = "info"):
+        self._notif_type = notif_type
+        self._text_label.setText(text)
+        self._icon_label.setText(icon)
+        self._update_labels_style()
+
+        duration = timeout if timeout is not None else self._notif_duration
+
+        self.setWindowOpacity(self._notif_opacity)
+        self._fade_anim.stop()
+
+        self.adjustSize()
+        self._reposition()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+        self._hide_timer.stop()
+        self._hide_timer.start(duration)
+
+    def _update_labels_style(self):
+        self._icon_label.setStyleSheet(
+            "font-size: 18px; border: none; background: transparent;"
+        )
+        self._text_label.setStyleSheet(
+            f"color: #ffffff; font-size: 13px; font-family: {FONT};"
+            "border: none; background: transparent;"
+        )
+
+    def _reposition(self):
+        screen = QApplication.primaryScreen()
+        if not screen:
+            return
+        sg = screen.availableGeometry()
+        m = self._margin
+        w = min(self._notif_width, sg.width() - 2 * m)
+        self._text_label.setMaximumWidth(w)
+        self.adjustSize()
+        h = self.height()
+
+        pos_map = {
+            "bottom-right": (sg.right() - w - m, sg.bottom() - h - m),
+            "bottom-left": (sg.left() + m, sg.bottom() - h - m),
+            "top-right": (sg.right() - w - m, sg.top() + m),
+            "top-left": (sg.left() + m, sg.top() + m),
+        }
+        x, y = pos_map.get(self._notif_position, (sg.right() - w - m, sg.bottom() - h - m))
+        self.setGeometry(int(x), int(y), int(w), int(h))
+
+    def _start_fade_out(self):
+        self._fade_anim.setStartValue(self.windowOpacity())
+        self._fade_anim.setEndValue(0.0)
+        self._fade_anim.start()
+
+    def _on_fade_done(self):
+        self.hide()
+
+    def _dismiss(self):
+        self._hide_timer.stop()
+        self._fade_anim.stop()
+        self.hide()
+
+    def update_config(self, opacity: float, duration: int, position: str, tips_enabled: bool = False):
+        self._notif_opacity = opacity
+        self._notif_duration = duration
+        self._notif_position = position
+        self._tips_enabled = tips_enabled
+        if self.isVisible():
+            self.setWindowOpacity(opacity)
+            self._reposition()
+        self._tips_timer.stop()
+        if tips_enabled and self.TIPS:
+            self._tips_timer.start(self._tips_interval)
+
+    def _show_random_tip(self):
+        if not self._tips_enabled or not self.TIPS:
+            return
+        self._tip_index = (self._tip_index + 1) % len(self.TIPS)
+        icon, tip = self.TIPS[self._tip_index]
+        self.show_notification(tip, icon=icon, timeout=5000)
+
+    def update_style(self):
+        # Background handled by paintEvent — nothing needed here
+        self._update_labels_style()
+        self.update()
 
 
 class TutorialOverlay(QWidget):
@@ -4749,3 +5537,954 @@ class TutorialOverlay(QWidget):
         overlay = cls(win, steps)
         overlay.start()
         return overlay
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MACROS — Page, Editor, Click Capture
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class MacrosPage(QWidget):
+    """Página que muestra la lista de macros guardadas."""
+
+    def __init__(self, main_window: "MainWindow"):
+        super().__init__()
+        self._mw = main_window
+        self._build_ui()
+
+    def _build_ui(self):
+        from actions.macro_engine import get_all
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        title = QLabel("⚡  MACROS")
+        title.setStyleSheet("font-size: 22px; font-weight: 700;")
+        layout.addWidget(title)
+
+        desc = QLabel(
+            "Creá secuencias de clics automatizadas. Cuando escribas una frase "
+            "que coincida con el activador de una macro, JARVIS la ejecutará "
+            "automáticamente."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size: 13px; opacity: 0.7;")
+        layout.addWidget(desc)
+
+        layout.addSpacing(8)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setObjectName("SettingsScroll")
+        self._card_container = QWidget()
+        self._card_layout = QVBoxLayout(self._card_container)
+        self._card_layout.setSpacing(10)
+        self._scroll.setWidget(self._card_container)
+        layout.addWidget(self._scroll, 1)
+
+        btn_new = QPushButton("  ＋  Nueva macro")
+        btn_new.setObjectName("SettingsBtn")
+        btn_new.setStyleSheet("font-size: 14px; padding: 10px;")
+        btn_new.clicked.connect(self._on_new_macro)
+        btn_new.setMinimumHeight(44)
+        layout.addWidget(btn_new)
+
+        btn_ai = QPushButton("  🤖  Macro AI")
+        btn_ai.setObjectName("SettingsBtn")
+        btn_ai.setStyleSheet("font-size: 14px; padding: 10px; background: #1a3a5c;")
+        btn_ai.clicked.connect(self._on_ai_macro)
+        btn_ai.setMinimumHeight(44)
+        layout.addWidget(btn_ai)
+
+    def refresh(self):
+        from actions.macro_engine import get_all
+        from PyQt6.QtCore import QTimer
+
+        scroll_pos = self._scroll.verticalScrollBar().value() if hasattr(self, '_scroll') else 0
+
+        for i in reversed(range(self._card_layout.count())):
+            w = self._card_layout.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+
+        macros = get_all()
+        if not macros:
+            lbl = QLabel("Todavía no hay macros. Creá una nueva para empezar.")
+            lbl.setStyleSheet("opacity: 0.5; font-size: 13px; padding: 20px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._card_layout.addWidget(lbl)
+            return
+
+        for m in macros:
+            self._card_layout.addWidget(_MacroCard(m, self._mw))
+
+        self._card_layout.addStretch()
+
+        if scroll_pos > 0:
+            QTimer.singleShot(0, lambda: self._scroll.verticalScrollBar().setValue(scroll_pos))
+
+    def _on_new_macro(self):
+        try:
+            dlg = MacroEditorDialog(self._mw)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self.refresh()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            # Also print to console
+            print(f"ERROR creating MacroEditorDialog: {e}")
+            # Write to the UI log if available
+            mw = self._mw
+            if hasattr(mw, 'ui') and mw.ui and hasattr(mw.ui, 'write_log'):
+                mw.ui.write_log(f"❌ Error al crear macro: {e}")
+
+    def _on_ai_macro(self):
+        from actions.macro_engine import ai_generate_steps
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QTextEdit, QPushButton, QHBoxLayout
+        from PyQt6.QtCore import QCoreApplication
+
+        mw = self._mw
+        ui = getattr(mw, 'ui', None)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("🤖 Macro AI")
+        dlg.setMinimumSize(500, 300)
+        dlg.setStyleSheet("QDialog { background: #1C1C1E; } QLabel { color: white; }")
+        lo = QVBoxLayout(dlg)
+        lo.addWidget(QLabel("Describí qué querés automatizar:"))
+        inp = QTextEdit()
+        inp.setPlaceholderText("Ej: Abrir Chrome, ir a Gmail, buscar correo de Juan y reenviarlo a pedro@mail.com")
+        inp.setMaximumHeight(100)
+        lo.addWidget(inp)
+        row = QHBoxLayout()
+        btn_ok = QPushButton("Generar pasos")
+        btn_ok.setObjectName("SettingsBtn")
+        btn_ok.setStyleSheet("font-size: 14px; padding: 10px;")
+        row.addWidget(btn_ok)
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.setObjectName("SettingsBtn")
+        btn_cancel.clicked.connect(dlg.reject)
+        row.addWidget(btn_cancel)
+        lo.addLayout(row)
+        status = QLabel("")
+        status.setStyleSheet("font-size: 12px; opacity: 0.7;")
+        lo.addWidget(status)
+
+        def on_generate():
+            desc = inp.toPlainText().strip()
+            if not desc:
+                status.setText("⚠️ Escribí una descripción primero.")
+                return
+            btn_ok.setEnabled(False)
+            btn_ok.setText("Generando...")
+            status.setText("🤖 Analizando...")
+            QCoreApplication.processEvents()
+
+            steps = ai_generate_steps(desc, player=ui)
+            if not steps:
+                status.setText("❌ No se pudieron generar pasos. Intentá de nuevo.")
+                btn_ok.setEnabled(True)
+                btn_ok.setText("Generar pasos")
+                return
+
+            dlg.accept()
+            editor = MacroEditorDialog(self._mw, initial_steps=steps)
+            if editor.exec() == QDialog.DialogCode.Accepted:
+                self.refresh()
+
+        btn_ok.clicked.connect(on_generate)
+        dlg.exec()
+
+
+class _MacroCard(QFrame):
+    """Tarjeta individual de macro en la lista."""
+
+    def __init__(self, macro: dict, main_window: "MainWindow"):
+        super().__init__()
+        self._macro = macro
+        self._mw = main_window
+        self.setObjectName("TutorialCard")
+        self.setStyleSheet(
+            "#TutorialCard { background: rgba(255,255,255,0.06); border-radius: 10px; padding: 12px; }"
+        )
+        layout = QVBoxLayout(self)
+        layout.setSpacing(4)
+
+        header = QHBoxLayout()
+        lbl_name = QLabel(macro.get("name", "Sin nombre"))
+        lbl_name.setStyleSheet("font-size: 15px; font-weight: 600;")
+        header.addWidget(lbl_name, 1)
+
+        # Contar pasos totales desde variaciones
+        variations = macro.get("variations", [])
+        total_steps = sum(len(v.get("steps", [])) for v in variations)
+        var_names = [v.get("name", "") for v in variations]
+
+        lbl_steps = QLabel(f"{total_steps} paso{'s' if total_steps != 1 else ''}")
+        lbl_steps.setStyleSheet("font-size: 12px; opacity: 0.5;")
+        header.addWidget(lbl_steps)
+        layout.addLayout(header)
+
+        lbl_trigger = QLabel(f"Activador: «{macro.get('trigger', '')}»")
+        lbl_trigger.setStyleSheet("font-size: 12px; opacity: 0.7; font-style: italic;")
+        layout.addWidget(lbl_trigger)
+
+        if var_names:
+            lbl_vars = QLabel(f"Variaciones: {', '.join(var_names)}")
+            lbl_vars.setStyleSheet("font-size: 11px; opacity: 0.5;")
+            layout.addWidget(lbl_vars)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+
+        btn_run = QPushButton("▶ Ejecutar")
+        btn_run.setObjectName("SettingsBtn")
+        btn_run.setStyleSheet("font-size: 12px; padding: 4px 12px;")
+        btn_run.clicked.connect(self._run)
+        btn_row.addWidget(btn_run)
+
+        btn_edit = QPushButton("✏️ Editar")
+        btn_edit.setObjectName("SettingsBtn")
+        btn_edit.setStyleSheet("font-size: 12px; padding: 4px 12px;")
+        btn_edit.clicked.connect(self._edit)
+        btn_row.addWidget(btn_edit)
+
+        btn_del = QPushButton("🗑️")
+        btn_del.setObjectName("SettingsBtn")
+        btn_del.setFixedWidth(32)
+        btn_del.setStyleSheet("font-size: 12px; padding: 4px;")
+        btn_del.clicked.connect(self._delete)
+        btn_row.addWidget(btn_del)
+
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+    def _run(self):
+        from actions.macro_engine import execute
+        from PyQt6.QtCore import QCoreApplication
+
+        variations = self._macro.get("variations", [])
+        if len(variations) > 1:
+            names = [v.get("name", "Sin nombre") for v in variations]
+            item, ok = QInputDialog.getItem(
+                self, "Seleccionar variación",
+                "¿Qué variación ejecutar?", names, 0, False
+            )
+            if ok and item:
+                QCoreApplication.processEvents()
+                execute(self._macro, player=self._mw.ui if hasattr(self._mw, 'ui') else None,
+                        variation_name=item)
+        else:
+            QCoreApplication.processEvents()
+            execute(self._macro, player=self._mw.ui if hasattr(self._mw, 'ui') else None)
+
+    def _edit(self):
+        dlg = MacroEditorDialog(self._mw, macro=self._macro)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            mp = getattr(self._mw, '_macros_page', None)
+            if mp:
+                mp.refresh()
+
+    def _delete(self):
+        from actions.macro_engine import delete
+
+        delete(self._macro["id"])
+        mp = getattr(self._mw, '_macros_page', None)
+        if mp:
+            mp.refresh()
+
+
+class MacroEditorDialog(QDialog):
+    """Diálogo para crear o editar una macro con variaciones."""
+
+    def __init__(self, main_window: "MainWindow", macro: dict | None = None,
+                 initial_steps: list[dict] | None = None):
+        super().__init__(main_window)
+        self._mw = main_window
+        self._macro = macro
+        self._variations: list[dict] = []
+        self._current_var_idx = 0
+        self._step_widgets: list[QFrame] = []
+        self.setWindowTitle("Editar Macro" if macro else "Nueva Macro")
+        self.setMinimumSize(620, 560)
+        self._build_ui()
+        if macro:
+            self._load_macro(macro)
+        elif initial_steps:
+            self._variations[0]["steps"] = list(initial_steps)
+            self._rebuild_steps(initial_steps)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        title = QLabel("✏️  " + ("EDITAR MACRO" if self._macro else "NUEVA MACRO"))
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        layout.addWidget(title)
+
+        # ── Nombre y activador ──
+        form = QFormLayout()
+        form.setSpacing(6)
+        self._inp_name = QLineEdit()
+        self._inp_name.setPlaceholderText("Ej: Nuevo proyecto en Premiere")
+        form.addRow("Nombre:", self._inp_name)
+        self._inp_trigger = QLineEdit()
+        self._inp_trigger.setPlaceholderText("Ej: crear nuevo proyecto")
+        form.addRow("Activador:", self._inp_trigger)
+        layout.addLayout(form)
+
+        # ── Variaciones ──
+        var_label = QLabel("VARIACIONES (cada una para una app/distinta interfaz):")
+        var_label.setStyleSheet("font-weight: 600; margin-top: 8px;")
+        layout.addWidget(var_label)
+
+        var_row = QHBoxLayout()
+        self._var_combo = QComboBox()
+        self._var_combo.setMinimumWidth(200)
+        self._var_combo.currentIndexChanged.connect(self._on_var_changed)
+        var_row.addWidget(self._var_combo, 1)
+
+        btn_add_var = QPushButton("＋")
+        btn_add_var.setFixedWidth(32)
+        btn_add_var.setToolTip("Agregar variación")
+        btn_add_var.clicked.connect(self._add_variation)
+        var_row.addWidget(btn_add_var)
+
+        btn_rename_var = QPushButton("✏️")
+        btn_rename_var.setFixedWidth(32)
+        btn_rename_var.setToolTip("Renombrar variación")
+        btn_rename_var.clicked.connect(self._rename_variation)
+        var_row.addWidget(btn_rename_var)
+
+        btn_del_var = QPushButton("🗑️")
+        btn_del_var.setFixedWidth(32)
+        btn_del_var.setToolTip("Eliminar variación")
+        btn_del_var.clicked.connect(self._delete_variation)
+        var_row.addWidget(btn_del_var)
+        layout.addLayout(var_row)
+
+        # ── Pasos de la variación actual ──
+        layout.addWidget(QLabel("PASOS DE ESTA VARIACIÓN:"))
+        self._steps_scroll = QScrollArea()
+        self._steps_scroll.setWidgetResizable(True)
+        self._steps_container = QWidget()
+        self._steps_layout = QVBoxLayout(self._steps_container)
+        self._steps_layout.setSpacing(8)
+        self._steps_scroll.setWidget(self._steps_container)
+        layout.addWidget(self._steps_scroll, 1)
+
+        # Si es nueva, crear variación por defecto (tras crear _steps_layout)
+        if not self._macro:
+            self._variations = [{"name": "Default", "steps": []}]
+            self._var_combo.blockSignals(True)
+            self._var_combo.addItem("Default")
+            self._var_combo.blockSignals(False)
+
+        btn_add_step = QPushButton("＋ Agregar paso")
+        btn_add_step.setObjectName("SettingsBtn")
+        btn_add_step.clicked.connect(self._add_step)
+        layout.addWidget(btn_add_step)
+
+        # ── Guardar / Cancelar ──
+        btn_row = QHBoxLayout()
+        btn_save = QPushButton("💾 Guardar")
+        btn_save.setObjectName("SettingsBtn")
+        btn_save.setStyleSheet("font-size: 14px; padding: 10px;")
+        btn_save.clicked.connect(self._save)
+        btn_row.addWidget(btn_save)
+
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.setObjectName("SettingsBtn")
+        btn_cancel.setStyleSheet("font-size: 14px; padding: 10px;")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+        layout.addLayout(btn_row)
+
+    def _load_macro(self, macro: dict):
+        self._inp_name.setText(macro.get("name", ""))
+        self._inp_trigger.setText(macro.get("trigger", ""))
+        variations = macro.get("variations", [])
+        if not variations:
+            variations = [{"name": "Default", "steps": []}]
+        self._variations = list(variations)
+
+        self._var_combo.blockSignals(True)
+        for v in self._variations:
+            self._var_combo.addItem(v.get("name", "Sin nombre"))
+
+        if self._variations:
+            self._var_combo.setCurrentIndex(0)
+            self._rebuild_steps(self._variations[0].get("steps", []))
+        self._var_combo.blockSignals(False)
+
+    def _on_var_changed(self, idx: int):
+        """Guarda los pasos actuales y carga los de la nueva variación."""
+        if not self._variations:
+            return
+        if 0 <= idx < len(self._variations):
+            self._save_current_steps()
+            self._rebuild_steps(self._variations[idx].get("steps", []))
+
+    def _save_current_steps(self):
+        """Guarda los pasos del editor en la variación actual."""
+        if not self._variations or self._current_var_idx >= len(self._variations):
+            self._current_var_idx = self._var_combo.currentIndex()
+            return
+        steps = []
+        for i, w in enumerate(self._step_widgets):
+            inp = w.findChild(QLineEdit)
+            step_data = getattr(w, '_step_data', None)
+            saved_clicks = list(step_data["clicks"]) if step_data else []
+            desc = inp.text().strip() if inp else ""
+            steps.append({"description": desc, "clicks": saved_clicks})
+        self._variations[self._current_var_idx]["steps"] = steps
+        self._current_var_idx = self._var_combo.currentIndex()
+
+    def _rebuild_steps(self, steps: list):
+        """Reconstruye los widgets de pasos para la variación actual."""
+        for w in self._step_widgets:
+            w.deleteLater()
+        self._step_widgets.clear()
+        for i in reversed(range(self._steps_layout.count())):
+            w = self._steps_layout.itemAt(i).widget()
+            if w:
+                w.deleteLater()
+
+        for step in steps:
+            self._add_step_widget(step.get("description", ""), step.get("clicks", []))
+
+    def _add_step(self):
+        self._add_step_widget("", [])
+        self._step_widgets[-1].show()
+
+    def _add_step_widget(self, desc: str, clicks: list):
+        from actions.macro_engine import get_all
+
+        frame = QFrame()
+        frame.setObjectName("StepCard")
+        frame.setStyleSheet(
+            "#StepCard { background: rgba(255,255,255,0.04); border-radius: 8px; padding: 8px; }"
+        )
+        fl = QVBoxLayout(frame)
+        fl.setSpacing(4)
+
+        hdr = QHBoxLayout()
+        num = self._steps_layout.count() + 1
+        lbl_num = QLabel(f"Paso {num}")
+        lbl_num.setStyleSheet("font-weight: 600; font-size: 13px;")
+        hdr.addWidget(lbl_num)
+        hdr.addStretch()
+
+        btn_del = QPushButton("✕")
+        btn_del.setFixedSize(24, 24)
+        btn_del.setStyleSheet("font-size: 12px;")
+        btn_del.clicked.connect(lambda: self._remove_step(frame))
+        hdr.addWidget(btn_del)
+        fl.addLayout(hdr)
+
+        inp_desc = QLineEdit()
+        inp_desc.setPlaceholderText("Descripción del paso...")
+        inp_desc.setText(desc)
+        fl.addWidget(inp_desc)
+
+        clicks_label = QLabel()
+        clicks_label.setStyleSheet("font-size: 12px; opacity: 0.7;")
+        fl.addWidget(clicks_label)
+
+        btn_capture = QPushButton("🎯 Capturar clicks")
+        btn_capture.setObjectName("SettingsBtn")
+        btn_capture.setStyleSheet("font-size: 12px; padding: 4px 10px;")
+        step_data = {"description": desc, "clicks": list(clicks)}
+        btn_capture.clicked.connect(lambda: self._capture_clicks(step_data, clicks_label))
+        fl.addWidget(btn_capture)
+
+        self._update_clicks_label(clicks_label, clicks)
+
+        # Almacenar referencia para guardar después
+        frame._step_data = step_data
+        frame._clicks_label = clicks_label
+        self._step_widgets.append(frame)
+        self._steps_layout.addWidget(frame)
+
+    def _remove_step(self, frame: QFrame):
+        idx = self._step_widgets.index(frame)
+        self._steps_layout.removeWidget(frame)
+        self._step_widgets.pop(idx)
+        frame.deleteLater()
+        self._renumber_steps()
+
+    def _renumber_steps(self):
+        for i, w in enumerate(self._step_widgets, 1):
+            lbl = w.findChild(QLabel)
+            if lbl:
+                lbl.setText(f"Paso {i}")
+
+    def _update_clicks_label(self, label: QLabel, clicks: list):
+        if not clicks:
+            label.setText("(sin clicks capturados)")
+        else:
+            parts = []
+            for c in clicks:
+                action = c.get("action", "click")
+                xy = f"({c['x']}, {c['y']})"
+                if action == "hold":
+                    parts.append(f"⏱️{xy} {c.get('value',0.5)}s")
+                elif action == "key":
+                    parts.append(f"⌨️{xy} {c.get('value','')}")
+                else:
+                    parts.append(f"🖱️{xy}")
+            label.setText(" | ".join(parts))
+
+    def _capture_clicks(self, step_data: dict, label: QLabel):
+        selector = WindowSelectorDialog(self._mw)
+        if selector.exec() != QDialog.DialogCode.Accepted:
+            return
+        target = selector.get_selected_title()
+        overlay = ClickCaptureOverlay(self._mw, existing=step_data.get("clicks", []),
+                                       target_window_title=target)
+        overlay.exec()
+        if overlay.confirmed:
+            step_data["clicks"] = list(overlay.clicks)
+            self._update_clicks_label(label, overlay.clicks)
+
+    # ── Gestión de variaciones ────────────────────────────────────────────────
+
+    def _add_variation(self):
+        name, ok = QInputDialog.getText(self, "Nueva variación",
+                                         "Nombre (ej: Premiere Pro, After Effects):")
+        if ok and name.strip():
+            self._variations.append({"name": name.strip(), "steps": []})
+            self._var_combo.addItem(name.strip())
+            self._var_combo.setCurrentIndex(self._var_combo.count() - 1)
+
+    def _rename_variation(self):
+        idx = self._var_combo.currentIndex()
+        if idx < 0:
+            return
+        old = self._variations[idx].get("name", "")
+        name, ok = QInputDialog.getText(self, "Renombrar variación", "Nombre:", text=old)
+        if ok and name.strip():
+            self._variations[idx]["name"] = name.strip()
+            self._var_combo.setItemText(idx, name.strip())
+
+    def _delete_variation(self):
+        idx = self._var_combo.currentIndex()
+        if idx < 0 or len(self._variations) <= 1:
+            QMessageBox.information(self, "No se puede eliminar",
+                                     "Debe haber al menos una variación.")
+            return
+        reply = QMessageBox.question(
+            self, "Eliminar variación",
+            f"¿Eliminar '{self._variations[idx].get('name', '')}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._variations.pop(idx)
+            self._var_combo.removeItem(idx)
+
+    # ── Guardado ──────────────────────────────────────────────────────────────
+
+    def _save(self):
+        name = self._inp_name.text().strip()
+        trigger = self._inp_trigger.text().strip()
+        if not name or not trigger:
+            QMessageBox.warning(self, "Campos requeridos", "Completá nombre y activador.")
+            return
+
+        if not self._variations:
+            QMessageBox.warning(self, "Sin variaciones",
+                                 "Agregá al menos una variación antes de guardar.")
+            return
+
+        # Guardar pasos de la variación actual
+        self._save_current_steps()
+
+        from actions.macro_engine import create, update as update_macro
+
+        if self._macro:
+            update_macro(self._macro["id"],
+                         {"name": name, "trigger": trigger, "variations": self._variations})
+        else:
+            m = create(name, trigger, variations=self._variations)
+            update_macro(m["id"], {"variations": self._variations})
+
+        self.accept()
+
+
+class WindowSelectorDialog(QDialog):
+    """Diálogo para elegir en qué ventana capturar los clics."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Seleccionar ventana destino")
+        self.setMinimumSize(420, 340)
+        self.setStyleSheet("""
+            QDialog { background: #1C1C1E; }
+            QLabel { color: white; font-size: 14px; }
+            QListWidget { background: #2C2C2E; color: white; border: 1px solid #3A3A3C;
+                          border-radius: 8px; font-size: 13px; padding: 4px; }
+            QListWidget::item { padding: 8px 12px; border-radius: 4px; }
+            QListWidget::item:selected { background: #0A84FF; }
+            QListWidget::item:hover { background: #3A3A3C; }
+        """)
+        self._selected_title = None
+        self._build_ui()
+        self._populate_windows()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        title = QLabel("🖥️  VENTANAS ABIERTAS")
+        title.setStyleSheet("font-size: 18px; font-weight: 700;")
+        layout.addWidget(title)
+
+        info = QLabel("Seleccioná la ventana donde querés colocar los puntos\nde clic. Se traerá al frente automáticamente.")
+        info.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 13px;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._list = QListWidget()
+        self._list.setSpacing(2)
+        layout.addWidget(self._list, 1)
+
+        btn_row = QHBoxLayout()
+        btn_skip = QPushButton("Pantalla completa")
+        btn_skip.setObjectName("SettingsBtn")
+        btn_skip.setToolTip("Usar toda la pantalla sin enfocar ninguna ventana")
+        btn_skip.clicked.connect(lambda: self._done(None))
+        btn_row.addWidget(btn_skip)
+
+        btn_row.addStretch()
+
+        btn_ok = QPushButton("✓ Usar esta ventana")
+        btn_ok.setObjectName("SettingsBtn")
+        btn_ok.setStyleSheet("font-size: 14px; padding: 10px 20px;")
+        btn_ok.clicked.connect(self._accept)
+        btn_row.addWidget(btn_ok)
+
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.setObjectName("SettingsBtn")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+
+        layout.addLayout(btn_row)
+
+    def _populate_windows(self):
+        import pygetwindow as gw
+        added = set()
+
+        item = QListWidgetItem("🖥️  Toda la pantalla (sin enfoque)")
+        item.setData(Qt.ItemDataRole.UserRole, None)
+        self._list.addItem(item)
+
+        for w in gw.getAllWindows():
+            title = w.title.strip()
+            if not title or title in added:
+                continue
+            added.add(title)
+            if "JARVIS" in title:
+                continue
+            item = QListWidgetItem(f"  {title}")
+            item.setData(Qt.ItemDataRole.UserRole, title)
+            item.setToolTip(title)
+            self._list.addItem(item)
+
+        if self._list.count() > 0:
+            self._list.setCurrentRow(0)
+
+    def _accept(self):
+        item = self._list.currentItem()
+        if item:
+            self._selected_title = item.data(Qt.ItemDataRole.UserRole)
+            self.accept()
+
+    def _done(self, title):
+        self._selected_title = title
+        self.accept()
+
+    def get_selected_title(self) -> str | None:
+        return self._selected_title
+
+
+class ClickCaptureOverlay(QDialog):
+    """Overlay de pantalla completa para capturar posiciones de clic.
+
+    - ⇧+Clik vacío/círculo → nuevo punto + popup de configuración
+    - Clik en círculo (sin ⇧) → selecciona + popup de edición
+    - Arrastrar círculo seleccionado → moverlo
+    - Clic derecho en círculo → editar/eliminar
+    """
+
+    def __init__(self, parent, existing: list | None = None,
+                 target_window_title: str | None = None):
+        super().__init__()  # Sin parent para recibir clicks fuera de la ventana JARVIS
+        self.clicks: list[dict] = [dict(c) for c in (existing or [])]
+        self.confirmed = False
+
+        self._selected_idx = -1
+        self._press_start = None
+        self._is_dragging = False
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setMouseTracking(True)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+
+        screen = QApplication.primaryScreen()
+        geo = screen.virtualGeometry() if screen else QRect(0, 0, 1920, 1080)
+        self.setGeometry(geo)
+        self.showFullScreen()
+
+        if target_window_title:
+            self._raise_target_window(target_window_title)
+            QTimer.singleShot(200, self._re_raise)
+
+    def _raise_target_window(self, title):
+        import pygetwindow as gw
+        for w in gw.getWindowsWithTitle(title):
+            try:
+                w.activate()
+                return
+            except Exception:
+                pass
+
+    def _re_raise(self):
+        self.raise_()
+        self.activateWindow()
+
+    def _hit_test(self, pos) -> int | None:
+        for i in range(len(self.clicks) - 1, -1, -1):
+            c = self.clicks[i]
+            dx = pos.x() - c["x"]
+            dy = pos.y() - c["y"]
+            if dx * dx + dy * dy <= 18 * 18:
+                return i
+        return None
+
+    def mousePressEvent(self, event):
+        modifiers = QApplication.keyboardModifiers()
+        shift_held = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+
+            if shift_held:
+                # Shift+Click → crear nuevo punto siempre
+                x, y = int(pos.x()), int(pos.y())
+                self.clicks.append({"x": x, "y": y, "action": "click", "value": ""})
+                self.update()
+                self._show_config_popup(len(self.clicks) - 1)
+                return
+
+            # Click normal → solo interactuar con círculos existentes
+            hit = self._hit_test(pos)
+            if hit is not None:
+                self._selected_idx = hit
+                self._press_start = (pos.x(), pos.y())
+                self._is_dragging = False
+                self.update()
+            else:
+                # Click en espacio vacío → desseleccionar
+                self._selected_idx = -1
+                self.update()
+
+        elif event.button() == Qt.MouseButton.RightButton:
+            pos = event.position()
+            hit = self._hit_test(pos)
+            if hit is not None:
+                self._selected_idx = hit
+                self.update()
+                self._show_config_popup(hit)
+
+    def mouseMoveEvent(self, event):
+        if self._selected_idx >= 0 and (event.buttons() & Qt.MouseButton.LeftButton):
+            pos = event.position()
+            if self._press_start:
+                dx = abs(pos.x() - self._press_start[0])
+                dy = abs(pos.y() - self._press_start[1])
+                if dx > 6 or dy > 6:
+                    self._is_dragging = True
+            if self._is_dragging:
+                c = self.clicks[self._selected_idx]
+                c["x"] = max(0, int(pos.x()))
+                c["y"] = max(0, int(pos.y()))
+                self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._selected_idx >= 0:
+            if not self._is_dragging:
+                self._show_config_popup(self._selected_idx)
+            self._selected_idx = -1
+            self._is_dragging = False
+            self._press_start = None
+            self.update()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.clicks.clear()
+            self.confirmed = False
+            self.close()
+        elif event.key() == Qt.Key.Key_Return:
+            self.confirmed = True
+            self.close()
+        elif event.key() == Qt.Key.Key_Backspace:
+            if self.clicks:
+                self.clicks.pop()
+                self._selected_idx = -1
+                self.update()
+
+    def _show_config_popup(self, idx: int):
+        """Muestra popup de configuración para el click en el índice dado."""
+        c = self.clicks[idx]
+        popup = _ClickOptionPopup(c, self)
+        popup.move(int(c["x"]), int(c["y"]) + 20)
+        popup.show()
+
+        proxy = QEventLoop()
+        popup.destroyed.connect(proxy.quit)
+        proxy.exec()
+
+        if popup.result_action == "delete":
+            self.clicks.pop(idx)
+            if self._selected_idx == idx:
+                self._selected_idx = -1
+        elif popup.result_action == "hold":
+            dur, ok = QInputDialog.getDouble(
+                self, "Pulsación", "Duración en segundos:", 0.5, 0.1, 10, 1
+            )
+            if ok:
+                c["action"] = "hold"
+                c["value"] = dur
+            else:
+                c["action"] = "click"
+                c["value"] = ""
+        elif popup.result_action == "key":
+            key, ok = QInputDialog.getText(
+                self, "Tecla", "Nombre de la tecla (enter, esc, tab, ctrl+c, etc.):"
+            )
+            if ok and key.strip():
+                c["action"] = "key"
+                c["value"] = key.strip().lower()
+            else:
+                c["action"] = "click"
+                c["value"] = ""
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 30))
+
+        for i, c in enumerate(self.clicks, 1):
+            x, y = c["x"], c["y"]
+            action = c.get("action", "click")
+            idx = i - 1
+            is_selected = idx == self._selected_idx
+
+            # Color según tipo
+            if action == "hold":
+                color = QColor("#30D158")
+            elif action == "key":
+                color = QColor("#0A84FF")
+            else:
+                color = QColor("#FFD60A")
+
+            radius = 16 if is_selected else 14
+
+            # Anillo de selección
+            if is_selected:
+                sel_pen = QPen(QColor("#FFFFFF"), 3)
+                painter.setPen(sel_pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(x - radius - 3, y - radius - 3,
+                                     (radius + 3) * 2, (radius + 3) * 2)
+
+            # Círculo principal
+            pen = QPen(color, 3)
+            painter.setPen(pen)
+            painter.setBrush(color)
+            painter.drawEllipse(x - radius, y - radius, radius * 2, radius * 2)
+
+            # Número
+            painter.setPen(QColor("#000000"))
+            f = painter.font()
+            f.setBold(True)
+            painter.setFont(f)
+            painter.drawText(QRectF(x - radius, y - radius, radius * 2, radius * 2),
+                             Qt.AlignmentFlag.AlignCenter, str(i))
+
+            # Etiqueta al lado
+            painter.setPen(QColor("#FFFFFF"))
+            if action == "hold":
+                lbl = f"⏱️ {c.get('value', 0.5)}s"
+            elif action == "key":
+                lbl = f"⌨️ {c.get('value', '')}"
+            else:
+                lbl = "🖱️"
+            painter.drawText(QRectF(x + radius + 4, y - 10, 140, 20),
+                             Qt.AlignmentFlag.AlignLeft, lbl)
+
+        # Barra superior con instrucciones
+        painter.fillRect(QRect(0, 0, self.width(), 36), QColor(0, 0, 0, 180))
+        painter.setPen(QColor("#FFFFFF"))
+        ff = painter.font()
+        ff.setPointSize(12)
+        painter.setFont(ff)
+        text = "⇧+Clik = nuevo punto · Clik círculo = seleccionar/arrastrar · ⏎ Confirmar · ⌫ Último · ⎋ Salir"
+        painter.drawText(QRect(0, 0, self.width(), 36), Qt.AlignmentFlag.AlignCenter, text)
+
+
+class _ClickOptionPopup(QFrame):
+    """Popup pequeño con opciones de tipo de acción para un punto de clic."""
+
+    result_action = "click"
+
+    def __init__(self, click_data: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Popup)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("""
+            _ClickOptionPopup { background: #2C2C2E; border: 1px solid #3A3A3C;
+                                border-radius: 8px; padding: 4px; }
+            QPushButton { font-size: 18px; padding: 6px 10px; border-radius: 6px;
+                          background: rgba(255,255,255,0.08); min-width: 40px; }
+            QPushButton:hover { background: rgba(255,255,255,0.18); }
+        """)
+
+        layout = QHBoxLayout(self)
+        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        btn_click = QPushButton("🖱️")
+        btn_click.setToolTip("Click simple")
+        btn_click.clicked.connect(lambda: self._done("click"))
+        layout.addWidget(btn_click)
+
+        btn_hold = QPushButton("⏱️")
+        btn_hold.setToolTip("Pulsación (mantener presionado)")
+        btn_hold.clicked.connect(lambda: self._done("hold"))
+        layout.addWidget(btn_hold)
+
+        btn_key = QPushButton("⌨️")
+        btn_key.setToolTip("Presionar tecla")
+        btn_key.clicked.connect(lambda: self._done("key"))
+        layout.addWidget(btn_key)
+
+        btn_del = QPushButton("🗑️")
+        btn_del.setToolTip("Eliminar este punto")
+        btn_del.clicked.connect(lambda: self._done("delete"))
+        layout.addWidget(btn_del)
+
+    def _done(self, action: str):
+        self.result_action = action
+        self.close()
+
+    def closeEvent(self, event):
+        self.deleteLater()
+        super().closeEvent(event)

@@ -18,7 +18,7 @@ if exist "%PY%" (
 )
 
 echo JARVIS Beta: no se encontro Python o main.py.
-echo Ejecuta primero "Instalar_JARVIS.bat" para instalar el entorno.
+echo Ejecuta primero "install\Instalar_JARVIS.bat" para instalar el entorno.
 pause
 :done
 popd

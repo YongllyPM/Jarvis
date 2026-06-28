@@ -5,6 +5,8 @@ import subprocess
 import shutil
 import time
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 def print_banner():
     cyan = "\033[36m"
     green = "\033[32m"
@@ -12,24 +14,27 @@ def print_banner():
     red = "\033[31m"
     reset = "\033[0m"
     
-    # Activar colores ANSI en Windows
     os.system("") 
     
-    print(f"{cyan}======================================================================={reset}")
-    print(f"{cyan}      __  ___   ____   _    __  ____   _____                           {reset}")
-    print(f"{cyan}     / / /   | / __ \\ / /  / / / __ \\ / ___/                           {reset}")
-    print(f"{cyan} __  / / / /| |/ /_/ // /  / / /_/ / \\__ \\                            {reset}")
-    print(f"{cyan}/ /_/ / / ___ // _, _// /__/ /  / _, _/ ___/ /                            {reset}")
-    print(f"{cyan}\\____/ /_/  |_|/_/ |_|/____/_/  /_/ |_|/____/                             {reset}")
-    print("                                                                       ")
-    print(f"{green}                  SISTEMA DE INSTALACIÓN INTELIGENTE                   {reset}")
-    print(f"{cyan}======================================================================={reset}")
+    sep = "=" * 72
+    banner = [
+        r"     _     _     ____  __     __ ___   ____",
+        r"    | |   / \   |  _ \ \ \   / /|_ _| / ___|",
+        r" _  | |  / _ \  | |_) | \ \ / /  | |  \___ \ ",
+        r"| |_| | / ___ \ |  _ <   \ V /   | |   ___) |",
+        r" \___/ /_/   \_\|_| \_\   \_/   |___| |____/",
+    ]
+    print(f"{cyan}{sep}{reset}")
+    for line in banner:
+        print(f"{cyan}{line}{reset}")
+    print()
+    print(f"{green}                  SISTEMA DE INSTALACIÓN INTELIGENTE{reset}")
+    print(f"{cyan}{sep}{reset}")
     print()
 
 def silent_install():
     """Run installation non-interactively (called from Inno Setup with --install)."""
-    base = os.path.dirname(os.path.abspath(__file__))
-    os.chdir(base)
+    os.chdir(BASE_DIR)
     
     # FASE 1: Limpieza
     print("[INFO] Limpiando archivos temporales...")
@@ -44,6 +49,9 @@ def silent_install():
     
     # FASE 2: Entorno Virtual
     print("[INFO] Configurando entorno virtual...")
+    if os.path.exists(".venv") and not os.path.exists(os.path.join(".venv", "pyvenv.cfg")):
+        print("[WARN] .venv corrupto (falta pyvenv.cfg), recreando...")
+        shutil.rmtree(".venv", ignore_errors=True)
     if not os.path.exists(".venv"):
         try:
             subprocess.run([sys.executable, "-m", "venv", ".venv"], check=True)
@@ -67,7 +75,7 @@ def silent_install():
     
     # FASE 4: Configuración inicial
     print("[INFO] Configuración inicial...")
-    config_dir = os.path.join(".", "config")
+    config_dir = "config"
     api_keys_path = os.path.join(config_dir, "api_keys.json")
     api_keys_template = os.path.join(config_dir, "api_keys.example.json")
     rules_path = os.path.join(config_dir, "rules.json")
@@ -110,12 +118,11 @@ def silent_install():
     
     print("")
     print("¡Instalación completada con éxito!")
-    print("Ejecutá 'Iniciar JARVIS Beta.vbs' para iniciar JARVIS.")
+    print("Ejecutá 'install\\Iniciar JARVIS Beta.vbs' para iniciar JARVIS.")
 
 def silent_uninstall():
     """Remove venv and caches (called from Inno Setup with --uninstall)."""
-    base = os.path.dirname(os.path.abspath(__file__))
-    os.chdir(base)
+    os.chdir(BASE_DIR)
     print("[INFO] Desinstalando JARVIS...")
     for p in [".venv", "__pycache__", "build"]:
         if os.path.exists(p):
@@ -131,7 +138,6 @@ def silent_uninstall():
     print("[OK] Desinstalación completada.")
 
 def main():
-    # ── CLI flags para Inno Setup ──
     if "--install" in sys.argv:
         silent_install()
         return
@@ -156,7 +162,6 @@ def main():
         time.sleep(1.5)
         sys.exit(0)
         
-    # FASE 1: Verificación de requisitos
     os.system("cls")
     print_banner()
     print("\033[36m [FASE 1/5] - Verificando requisitos del sistema...\033[0m")
@@ -185,11 +190,14 @@ def main():
     print("\033[32m[OK] Limpieza de residuos completada.\033[0m")
     time.sleep(1)
     
-    # FASE 2: Entorno Virtual
     os.system("cls")
     print_banner()
     print("\033[36m [FASE 2/5] - Configurando Entorno Virtual (.venv)...\033[0m")
     print()
+    
+    if os.path.exists(".venv") and not os.path.exists(os.path.join(".venv", "pyvenv.cfg")):
+        print("\033[33m[WARN] .venv corrupto (falta pyvenv.cfg), recreando...\033[0m")
+        shutil.rmtree(".venv", ignore_errors=True)
     
     if not os.path.exists(".venv"):
         print("\033[33m[INFO] Creando un entorno virtual de Python limpio...\033[0m")
@@ -205,7 +213,6 @@ def main():
         
     time.sleep(1)
     
-    # FASE 3: Instalación de dependencias
     os.system("cls")
     print_banner()
     print("\033[36m [FASE 3/5] - Instalando dependencias de JARVIS...\033[0m")
@@ -229,13 +236,12 @@ def main():
         
     time.sleep(1)
     
-    # FASE 4: Configuración inicial
     os.system("cls")
     print_banner()
     print("\033[36m [FASE 4/5] - Configuración Inicial...\033[0m")
     print()
     
-    config_dir = os.path.join(".", "config")
+    config_dir = "config"
     api_keys_path = os.path.join(config_dir, "api_keys.json")
     api_keys_template = os.path.join(config_dir, "api_keys.example.json")
     rules_path = os.path.join(config_dir, "rules.json")
@@ -289,7 +295,6 @@ def main():
     
     time.sleep(1)
     
-    # FASE 5: Acceso directo
     os.system("cls")
     print_banner()
     print("\033[36m [FASE 5/5] - Creación de Accesos Directos...\033[0m")
@@ -301,9 +306,8 @@ def main():
         current_dir = os.getcwd()
         svg_path = os.path.join(current_dir, "assets", "jarvis_icono.svg")
         icon_path = os.path.join(current_dir, "assets", "jarvis_icono.ico")
-        target_vbs = os.path.join(current_dir, "Iniciar JARVIS Beta.vbs")
+        target_vbs = os.path.join(current_dir, "install", "Iniciar JARVIS Beta.vbs")
         
-        # Generar ICO desde SVG (necesario para el acceso directo en Windows)
         if os.path.exists(svg_path) and not os.path.exists(icon_path):
             try:
                 ps_script = f"""
@@ -354,7 +358,6 @@ def main():
             print("\033[33m[ADVERTENCIA] No se encontró SVG, se usará icono por defecto.\033[0m")
             icon_path = ""
         
-        # Crear acceso directo con PowerShell
         ps_cmd = (
             f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut(([System.Environment]::GetFolderPath('Desktop')+'\\JARVIS AI.lnk'));"
             f"$s.TargetPath='{target_vbs}';"
@@ -384,7 +387,6 @@ def main():
         
     time.sleep(1)
     
-    # Pantalla Final
     os.system("cls")
     print_banner()
     print("\033[32m=======================================================================")
@@ -407,9 +409,10 @@ def main():
     if launch_opt == "1":
         print("Iniciando JARVIS...")
         try:
-            os.startfile("Iniciar JARVIS Beta.vbs")
+            os.startfile("install\\Iniciar JARVIS Beta.vbs")
         except Exception:
-            subprocess.Popen(["wscript.exe", "Iniciar JARVIS Beta.vbs"])
+            install_vbs = os.path.join(BASE_DIR, "install", "Iniciar JARVIS Beta.vbs")
+            subprocess.Popen(["wscript.exe", install_vbs])
             
     print("\nGracias por usar el instalador de JARVIS AI.")
     time.sleep(2)
